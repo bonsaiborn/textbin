@@ -1,0 +1,40 @@
+{
+  "name": "TextBin",
+  "short_name": "TextBin",
+  "description": "Private self-hosted plain text vault.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#87D3C3",
+  "theme_color": "#100F0F",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "/icons/maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "screenshots": [
+    {
+        "src": "og/textbin-og.png",
+        "sizes": "1280x640",
+        "type": "image/png",
+        "form_factor": "wide"
+    },
+    {
+        "src": "og/textbin-og-mobile.png",
+        "sizes": "640x680",
+        "type": "image/png"
+    }
+  ]
+}

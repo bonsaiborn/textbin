@@ -1,0 +1,38 @@
+{
+  "name": "textbin",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:server": "tsx watch src/server/index.ts",
+    "dev:client": "vite",
+    "build": "npm run build:client && npm run build:server",
+    "build:client": "vite build",
+    "build:server": "tsc -p tsconfig.server.json",
+    "start": "node dist/server/index.js",
+    "docker:build": "docker build -t textbin:test .",
+    "docker:test": "docker run --rm -p 3003:3000 -e NODE_ENV=production -e APP_URL=http://localhost:3003 -e APP_SECRET=test_secret_123_change_me -e ADMIN_USERNAME=admin -e ADMIN_PASSWORD=change_me -e DB_FILENAME=/data/app.sqlite -e NOTES_DIR=/data/notes -e MAX_NOTE_SIZE=262144 -e COOKIE_SECURE=false -v textbin-test-data:/data textbin:test"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.0.2",
+    "@fastify/static": "^9.1.3",
+    "@node-rs/argon2": "^2.0.2",
+    "better-sqlite3": "^12.9.0",
+    "fastify": "^5.8.5",
+    "vue": "^3.5.33"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@tailwindcss/postcss": "^4.2.4",
+    "@types/node": "^25.6.0",
+    "@vitejs/plugin-vue": "^6.0.6",
+    "autoprefixer": "^10.5.0",
+    "concurrently": "^9.2.1",
+    "postcss": "^8.5.14",
+    "tailwindcss": "^4.2.4",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.10"
+  }
+}

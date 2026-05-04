@@ -1,0 +1,273 @@
+# TextBin
+
+![logo](docs/screenshots/textbin-og.png)
+
+TextBin is a small private text vault for people who just want to write and store plain text without turning it into a second operating system.
+
+No Markdown-first workflow.  
+No uploads.  
+No search index.  
+No public feed.  
+No "workspace magic".  
+
+Just login, create a note, write text, save it as a real `.txt` file, and move on with your life.
+
+It is built with Vue 3, TypeScript, Tailwind CSS, Fastify, and SQLite. Note contents are stored as real `.txt` files on disk. SQLite is used only for application data such as users, sessions, login attempts, instance settings, and share records.
+
+## Demo
+
+There is no public demo.
+
+If you want to try it, you have to run it. 🙂
+
+## What It Does
+
+- Private login-only text workspace
+- Plain text notes stored as real files
+- Per-user note directories
+- Admin panel for users, shares, notes, and instance settings
+- Optional public share links
+- Optional passwords for public shares
+- Mobile and desktop UI
+- Single-container Docker deployment
+
+## Why This Exists
+
+TextBin exists because sometimes you do not need a full knowledge management system. Sometimes you just need a clean place for notes, snippets, drafts, configs, lesson ideas, commands, or random thoughts that should not live in a messenger chat called "Saved Messages".
+
+The main idea is simple:
+
+- your actual notes are `.txt` files
+- the app is only a web interface around them
+- SQLite does not own your content
+- backups are boring, which is good
+
+If the app disappears tomorrow, your notes are still readable as normal text files.
+
+## Features
+
+- Username and password authentication
+- `HttpOnly` cookie sessions
+- First-start admin bootstrap from environment variables
+- `admin` and `user` roles
+- Notes stored under `NOTES_DIR/<username>`
+- Sorting by newest, oldest, name A-Z, and name Z-A
+- Create, edit, rename, download, and delete notes
+- Login rate limiting by username and IP
+- Optional public links for notes
+- Optional password protection for public links
+- View counts for public links
+- Admin-only user management
+- Admin-only instance settings
+- Dark, light, and system theme support
+
+## Screenshots
+
+![Login](docs/screenshots/login.png)
+![Dashboard](docs/screenshots/dashboard.png)
+![Admin Users](docs/screenshots/admin-users.png)
+![Public Share](docs/screenshots/public-share.png)
+![Mobile](docs/screenshots/mobile.png)
+
+## Storage Model
+
+Expected host structure:
+
+```text
+./data/app.sqlite
+./data/notes/admin/example.txt
+./data/notes/alice/meeting-notes.txt
+```
+
+The application uses:
+
+- `DB_FILENAME=/data/app.sqlite`
+- `NOTES_DIR=/data/notes`
+
+Actual note content is not stored in SQLite.
+
+SQLite is used for app state. The note files are just note files. Very advanced technology.
+
+## Environment Variables
+
+| Name | Required | Default | Purpose |
+| --- | --- | --- | --- |
+| `NODE_ENV` | No | `development` | Enables production behavior |
+| `PORT` | No | `3000` | Fastify listen port |
+| `APP_URL` | No | `http://localhost:3000` | Public base URL |
+| `APP_SECRET` | Yes | `change_me_long_random_secret` | Session token HMAC secret |
+| `ADMIN_USERNAME` | Yes | `admin` | First-start admin username |
+| `ADMIN_PASSWORD` | Yes | `change_me` | First-start admin password |
+| `RESET_ADMIN_ON_START` | No | `false` | Reset the first admin user from env on next boot |
+| `DB_FILENAME` | No | `./data/app.sqlite` | SQLite database file |
+| `NOTES_DIR` | No | `./data/notes` | Directory for note files |
+| `MAX_NOTE_SIZE` | No | `262144` | Maximum note size in bytes |
+| `LOGIN_MAX_FAILED_ATTEMPTS` | No | `5` | Failed login attempts allowed in the time window |
+| `LOGIN_ATTEMPT_WINDOW_MINUTES` | No | `10` | Window for failed login counting |
+| `LOGIN_BLOCK_MINUTES` | No | `15` | Temporary block duration |
+| `COOKIE_SECURE` | No | `false` | Set to `true` behind HTTPS |
+| `TRUST_PROXY` | No | `true` | Trust proxy headers such as `X-Forwarded-Proto` |
+
+## Quick Start With Docker
+
+1. Create a project directory and prepare the data folder:
+
+```bash
+mkdir -p data/notes
+```
+
+> [!CAUTION]
+> If you run into permission issues, make the folder writable for the user running the container. Avoid ```chmod -R 777``` unless you are testing locally and know exactly why you are doing it.
+
+
+2. Create a `docker-compose.yml` file.
+
+```yaml
+services:
+  textbin:
+    image: bonsaiborn/textbin:v3
+    container_name: textbin
+    ports:
+      - "127.0.0.1:3001:3000"
+    environment:
+      NODE_ENV: "production"
+      APP_URL: "https://example.com"
+      APP_SECRET: "replace_with_a_long_random_secret"
+      ADMIN_USERNAME: "admin"
+      ADMIN_PASSWORD: "replace_with_a_strong_password"
+      RESET_ADMIN_ON_START: "false"
+      DB_FILENAME: "/data/app.sqlite"
+      NOTES_DIR: "/data/notes"
+      MAX_NOTE_SIZE: "262144"
+      LOGIN_MAX_FAILED_ATTEMPTS: "5"
+      LOGIN_ATTEMPT_WINDOW_MINUTES: "10"
+      LOGIN_BLOCK_MINUTES: "15"
+      COOKIE_SECURE: "true"
+      TRUST_PROXY: "true"
+      PORT: "3000"
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+```
+
+3. Change at least these values:
+
+- `APP_URL`
+- `APP_SECRET`
+- `ADMIN_PASSWORD`
+- `COOKIE_SECURE`
+
+For a local test, ```COOKIE_SECURE``` can stay ```false```.
+
+For HTTPS deployment, set it to ```true```.
+
+4. Start the app:
+
+```bash
+docker compose up -d
+```
+
+5. Open the app in your browser.
+
+For a VPS deployment, a typical setup is:
+
+- DNS points to the VPS
+- nginx or Caddy handles HTTPS
+- TextBin is bound to `127.0.0.1:<port>`
+- the reverse proxy forwards traffic to the container
+
+Example port binding:
+```yaml
+ports:
+  - "127.0.0.1:3001:3000"
+```
+This keeps the app away from direct public access. Let the reverse proxy do its job.
+
+## Docker Image Workflow
+
+If you prefer building locally and pushing an image to a registry:
+
+```bash
+docker build -t yourname/textbin:v1 .
+docker push yourname/textbin:v1
+```
+
+Then on your VPS:
+
+```bash
+docker pull yourname/textbin:v1
+docker compose up -d
+```
+
+You do not need to run ```npm run build``` before ```docker build```. The Dockerfile builds the frontend and backend inside the image.
+
+## Local Development
+
+Install dependencies:
+
+```bash
+npm install
+```
+
+Start frontend and backend development servers:
+
+```bash
+npm run dev
+```
+
+The frontend runs through Vite and proxies ```/api/*``` to the backend.
+
+## Security Notes
+
+TextBin is intentionally small, but it still tries to avoid the obvious footguns.
+
+- All note APIs require authentication
+- `/data` and `/data/notes` are never served statically
+- Notes are isolated per user under ```NOTES_DIR/<username>```
+- Filenames are sanitized and forced to ```.txt```
+- Absolute paths, slashes, backslashes, and ``..`` are rejected
+- Final file paths are resolved and checked to stay inside ```NOTES_DIR```
+- Note content is treated strictly as plain text
+- Request body size is capped
+- Note size is capped through ```MAX_NOTE_SIZE```
+- Sessions are stored server-side and delivered through ```HttpOnly``` cookies
+- The container runs as a non-root user
+- Public share links are read-only
+- Password-protected share previews do not reveal the note title in page metadata
+
+## Known Limitation
+
+Password-protected public links do not yet have a dedicated brute-force rate limit.
+
+For a private self-hosted setup, this may be acceptable. Still, it is a real security improvement area and should be handled before exposing password-protected shares to a wider audience.
+
+## What TextBin Is Not
+
+TextBin is not trying to replace:
+
+- Obsidian
+- Notion
+- SilverBullet
+- HedgeDoc
+- Google Docs
+- your entire personality
+
+It is just a small self-hosted text box with login, files, and a few useful buttons.
+
+## Honest Project Status
+
+Yes, this project was created with some hardcore vibecoding involved, and Codex helped a lot along the way.
+
+That said, TextBin is used for real personal needs, not just as a pretty GitHub ornament. It will keep evolving over time, probably in the usual self-hosted rhythm: sudden bursts of energy followed by suspiciously quiet weeks.
+
+## Tech Stack
+
+- Frontend: Vue 3 + TypeScript + Tailwind CSS
+- Backend: Fastify
+- Database: SQLite
+- Password hashing: Argon2id via `@node-rs/argon2`
+- Deployment: Docker / Docker Compose
+
+## License
+
+MIT License
