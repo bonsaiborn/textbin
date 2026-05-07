@@ -56,9 +56,12 @@ If the app disappears tomorrow, your notes are still readable as normal text fil
 - Login rate limiting by username and IP
 - Optional public links for notes
 - Optional password protection for public links
+- Separate read-only and editable public links
 - View counts for public links
+- Edit counts for editable public links
 - Admin-only user management
 - Admin-only instance settings
+- Account settings for password changes and session management
 - Dark, light, and system theme support
 
 ## Screenshots
@@ -105,7 +108,9 @@ SQLite is used for app state. The note files are just note files. Very advanced 
 | `LOGIN_MAX_FAILED_ATTEMPTS` | No | `5` | Failed login attempts allowed in the time window |
 | `LOGIN_ATTEMPT_WINDOW_MINUTES` | No | `10` | Window for failed login counting |
 | `LOGIN_BLOCK_MINUTES` | No | `15` | Temporary block duration |
+| `SESSION_DAYS` | No | `14` | Session lifetime in days |
 | `COOKIE_SECURE` | No | `false` | Set to `true` behind HTTPS |
+| `COOKIE_DOMAIN` | No | unset | Cookie domain, usually your site hostname |
 | `TRUST_PROXY` | No | `true` | Trust proxy headers such as `X-Forwarded-Proto` |
 
 ## Quick Start With Docker
@@ -142,7 +147,9 @@ services:
       LOGIN_MAX_FAILED_ATTEMPTS: "5"
       LOGIN_ATTEMPT_WINDOW_MINUTES: "10"
       LOGIN_BLOCK_MINUTES: "15"
+      SESSION_DAYS: "14"
       COOKIE_SECURE: "true"
+      COOKIE_DOMAIN: "example.com"
       TRUST_PROXY: "true"
       PORT: "3000"
     volumes:
@@ -156,8 +163,11 @@ services:
 - `APP_SECRET`
 - `ADMIN_PASSWORD`
 - `COOKIE_SECURE`
+- `COOKIE_DOMAIN` if you deploy on a real domain
 
 For a local test, ```COOKIE_SECURE``` can stay ```false```.
+
+For local development, leave `COOKIE_DOMAIN` unset.
 
 For HTTPS deployment, set it to ```true```.
 
@@ -231,15 +241,24 @@ TextBin is intentionally small, but it still tries to avoid the obvious footguns
 - Request body size is capped
 - Note size is capped through ```MAX_NOTE_SIZE```
 - Sessions are stored server-side and delivered through ```HttpOnly``` cookies
+- Session lifetime is configurable through `SESSION_DAYS`
+- Logout deletes the current session server-side
+- Password changes revoke older sessions
+- Blocked users lose active sessions
+- Admins can review and revoke user sessions
 - The container runs as a non-root user
-- Public share links are read-only
+- Public share links support separate read-only and editable modes
+- Password-protected public share attempts are rate-limited
 - Password-protected share previews do not reveal the note title in page metadata
+- Mutating authenticated API requests are guarded by `Origin`, `Sec-Fetch-Site`, and CSRF checks
+- Suspicious direct paths such as `/data/*`, `/notes/*`, `*.sqlite`, and `*.db` are blocked with `404`
+```
 
-## Known Limitation
+## Known Limitations
 
-Password-protected public links do not yet have a dedicated brute-force rate limit.
-
-For a private self-hosted setup, this may be acceptable. Still, it is a real security improvement area and should be handled before exposing password-protected shares to a wider audience.
+- TextBin is designed for a single instance, not a horizontally scaled cluster.
+- Editable public links are intentionally powerful and should be treated like secrets.
+- This is a serious self-hosted project, but it is still a small app, not a formally audited security product.
 
 ## What TextBin Is Not
 

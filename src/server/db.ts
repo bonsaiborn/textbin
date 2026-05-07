@@ -30,6 +30,90 @@ function ensureSchemaMigrations(db: Database.Database): void {
   if (!hasColumn(db, "users", "blocked")) {
     db.exec(`ALTER TABLE users ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0`);
   }
+
+  if (!hasColumn(db, "sessions", "ip")) {
+    db.exec(`ALTER TABLE sessions ADD COLUMN ip TEXT`);
+  }
+
+  if (!hasColumn(db, "sessions", "user_agent")) {
+    db.exec(`ALTER TABLE sessions ADD COLUMN user_agent TEXT`);
+  }
+
+  if (!hasColumn(db, "sessions", "last_used_at")) {
+    db.exec(`ALTER TABLE sessions ADD COLUMN last_used_at TEXT`);
+    db.exec(`UPDATE sessions SET last_used_at = created_at WHERE last_used_at IS NULL`);
+  }
+}
+
+function ensureSharesSchema(db: Database.Database): void {
+  const shareColumns = db.prepare("PRAGMA table_info(shares)").all() as Array<{ name: string }>;
+  if (shareColumns.length === 0) {
+    return;
+  }
+
+  const columnNames = new Set(shareColumns.map((column) => column.name));
+  if (columnNames.has("read_slug")) {
+    if (!columnNames.has("expires_at")) {
+      db.exec(`ALTER TABLE shares ADD COLUMN expires_at TEXT`);
+    }
+    if (!columnNames.has("edit_count")) {
+      db.exec(`ALTER TABLE shares ADD COLUMN edit_count INTEGER NOT NULL DEFAULT 0`);
+    }
+    return;
+  }
+
+  db.exec(`
+    CREATE TABLE shares_next (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      filename TEXT NOT NULL,
+      read_enabled INTEGER NOT NULL DEFAULT 0,
+      read_slug TEXT,
+      edit_enabled INTEGER NOT NULL DEFAULT 0,
+      edit_slug TEXT,
+      password_hash TEXT,
+      expires_at TEXT,
+      view_count INTEGER NOT NULL DEFAULT 0,
+      edit_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    INSERT INTO shares_next (
+      id,
+      user_id,
+      filename,
+      read_enabled,
+      read_slug,
+      edit_enabled,
+      edit_slug,
+      password_hash,
+      expires_at,
+      view_count,
+      edit_count,
+      created_at,
+      updated_at
+    )
+    SELECT
+      id,
+      user_id,
+      filename,
+      1,
+      slug,
+      0,
+      NULL,
+      password_hash,
+      NULL,
+      view_count,
+      0,
+      created_at,
+      updated_at
+    FROM shares;
+
+    DROP TABLE shares;
+    ALTER TABLE shares_next RENAME TO shares;
+  `);
 }
 
 function getFirstUser(db: Database.Database): UserRecord | undefined {
@@ -40,7 +124,8 @@ function ensureSettingsTable(db: Database.Database): void {
   const now = new Date().toISOString();
   const entries: Array<[keyof InstanceSettings, string]> = [
     ["defaultTheme", defaultInstanceSettings.defaultTheme],
-    ["shareSlugLength", String(defaultInstanceSettings.shareSlugLength)],
+    ["defaultReadSlugLength", String(defaultInstanceSettings.defaultReadSlugLength)],
+    ["defaultEditSlugLength", String(defaultInstanceSettings.defaultEditSlugLength)],
     ["shareCharset", defaultInstanceSettings.shareCharset]
   ];
 
@@ -132,8 +217,11 @@ export async function initializeDatabase(): Promise<void> {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
       token_hash TEXT NOT NULL UNIQUE,
+      ip TEXT,
+      user_agent TEXT,
       expires_at TEXT NOT NULL,
       created_at TEXT NOT NULL,
+      last_used_at TEXT,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
@@ -155,12 +243,26 @@ export async function initializeDatabase(): Promise<void> {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
       filename TEXT NOT NULL,
-      slug TEXT NOT NULL UNIQUE,
+      read_enabled INTEGER NOT NULL DEFAULT 0,
+      read_slug TEXT,
+      edit_enabled INTEGER NOT NULL DEFAULT 0,
+      edit_slug TEXT,
       password_hash TEXT,
+      expires_at TEXT,
       view_count INTEGER NOT NULL DEFAULT 0,
+      edit_count INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS public_link_attempts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      slug TEXT NOT NULL,
+      ip TEXT NOT NULL,
+      action TEXT NOT NULL,
+      success INTEGER NOT NULL,
+      created_at TEXT NOT NULL
     );
 
     CREATE INDEX IF NOT EXISTS idx_login_attempts_username_ip_created
@@ -171,8 +273,24 @@ export async function initializeDatabase(): Promise<void> {
 
     CREATE INDEX IF NOT EXISTS idx_shares_user_id
     ON shares (user_id);
+
+    CREATE INDEX IF NOT EXISTS idx_public_link_attempts_slug_ip_action_created
+    ON public_link_attempts (slug, ip, action, created_at);
   `);
   ensureSchemaMigrations(db);
+  ensureSharesSchema(db);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_shares_user_id
+    ON shares (user_id);
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_shares_read_slug_unique
+    ON shares (read_slug)
+    WHERE read_slug IS NOT NULL;
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_shares_edit_slug_unique
+    ON shares (edit_slug)
+    WHERE edit_slug IS NOT NULL;
+  `);
   ensureSettingsTable(db);
 
   const now = new Date().toISOString();
@@ -233,7 +351,14 @@ export function getInstanceSettings(): InstanceSettings {
         : map.get("defaultTheme") === "system"
           ? "system"
           : defaultInstanceSettings.defaultTheme,
-    shareSlugLength: Number.parseInt(map.get("shareSlugLength") ?? String(defaultInstanceSettings.shareSlugLength), 10),
+    defaultReadSlugLength: Number.parseInt(
+      map.get("defaultReadSlugLength") ?? String(defaultInstanceSettings.defaultReadSlugLength),
+      10
+    ),
+    defaultEditSlugLength: Number.parseInt(
+      map.get("defaultEditSlugLength") ?? String(defaultInstanceSettings.defaultEditSlugLength),
+      10
+    ),
     shareCharset: map.get("shareCharset") ?? defaultInstanceSettings.shareCharset
   };
 }
@@ -248,7 +373,8 @@ export function updateInstanceSettings(next: InstanceSettings): InstanceSettings
   );
 
   statement.run("defaultTheme", next.defaultTheme, now);
-  statement.run("shareSlugLength", String(next.shareSlugLength), now);
+  statement.run("defaultReadSlugLength", String(next.defaultReadSlugLength), now);
+  statement.run("defaultEditSlugLength", String(next.defaultEditSlugLength), now);
   statement.run("shareCharset", next.shareCharset, now);
   return getInstanceSettings();
 }

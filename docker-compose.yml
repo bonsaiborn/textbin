@@ -3,10 +3,10 @@ services:
     build: .
     container_name: textbin
     ports:
-      - "127.0.0.1:3001:3000"
+      - "127.0.0.1:3003:3000"
     environment:
       NODE_ENV: "production"
-      APP_URL: "https://127.0.0.1:3001"
+      APP_URL: "http://localhost:3003"
       APP_SECRET: "replace_with_a_long_random_secret"
       ADMIN_USERNAME: "admin"
       ADMIN_PASSWORD: "replace_with_a_strong_password"
@@ -17,7 +17,8 @@ services:
       LOGIN_MAX_FAILED_ATTEMPTS: "5"
       LOGIN_ATTEMPT_WINDOW_MINUTES: "10"
       LOGIN_BLOCK_MINUTES: "15"
-      COOKIE_SECURE: "true"
+      SESSION_DAYS: "14"
+      COOKIE_SECURE: "false"
       TRUST_PROXY: "true"
       PORT: "3000"
     volumes:

@@ -3,13 +3,15 @@ import path from "node:path";
 import Fastify, { type FastifyRequest } from "fastify";
 import cookie from "@fastify/cookie";
 import fastifyStatic from "@fastify/static";
-import { cleanupExpiredSessions, clearSessionCookie, createSession, deleteSessionByToken, findUserByUsername, getAuthenticatedUser, getClientIp, getSessionCookieName, hashPassword, isLoginBlocked, recordLoginAttempt, requireAdmin, requireAuth, setSessionCookie, verifyPassword } from "./auth.js";
+import { cleanupExpiredSessions, clearCsrfCookie, clearSessionCookie, createSession, deleteSessionById, deleteSessionByToken, deleteSessionsForUser, findUserByUsername, getAuthenticatedUser, getClientIp, getCurrentSessionId, getSessionById, getSessionCookieName, hasValidCsrfToken, hashPassword, isLoginBlocked, listSessionsForUser, recordLoginAttempt, requireAdmin, requireAuth, rotateCurrentSession, setSessionCookie, verifyPassword } from "./auth.js";
 import { config } from "./config.js";
 import { getDb, getInstanceSettings, initializeDatabase, updateInstanceSettings } from "./db.js";
 import { logError, logInfo, logWarn } from "./logger.js";
 import { assertSafeUsername, createNote, deleteNote, getDownloadPayload, listNotesForUser, parseSortMode, readNote, renameNote, resolveUserNotesDir, updateNote } from "./notes.js";
-import { accessPublicShare, deleteShareById, deleteShareForUser, getShareById, getShareBySlug, getShareForUser, listAllSharesWithUsers, listSharesForUser, renameShareFilenameForUser, toShareSummary, updateShareById, upsertShareForUser } from "./shares.js";
-import type { InstanceSettings, UserRecord, UserRole } from "./types.js";
+import { accessPublicShare, createPublicEditGrantToken, deleteShareById, deleteShareForUser, getShareByEditSlug, getShareById, getShareByReadSlug, getShareForUser, hasPublicEditGrant, listAllSharesWithUsers, listSharesForUser, openPublicEdit, renameShareFilenameForUser, savePublicEdit, toShareSummary, updateShareById, upsertShareForUser, verifyPublicEditAccess } from "./shares.js";
+import type { InstanceSettings, SessionRecord, ShareLinkKind, UserRecord, UserRole } from "./types.js";
+
+const PUBLIC_EDIT_COOKIE = "textbin_public_edit";
 
 function isErrorWithMessage(value: unknown): value is Error {
   return value instanceof Error;
@@ -42,12 +44,17 @@ function normalizeUsername(value: unknown): string | undefined {
 }
 
 function hasUnsafeCrossOrigin(request: FastifyRequest): boolean {
+  const secFetchSite = request.headers["sec-fetch-site"];
   if (!request.raw.url?.startsWith("/api/")) {
     return false;
   }
 
   if (request.method === "GET" || request.method === "HEAD" || request.method === "OPTIONS") {
     return false;
+  }
+
+  if (secFetchSite === "cross-site") {
+    return true;
   }
 
   if (request.raw.url.startsWith("/api/public/shares/")) {
@@ -83,17 +90,85 @@ function hasUnsafeCrossOrigin(request: FastifyRequest): boolean {
   }
 }
 
+function requiresCsrfProtection(request: FastifyRequest): boolean {
+  if (!request.raw.url?.startsWith("/api/")) {
+    return false;
+  }
+
+  if (request.method === "GET" || request.method === "HEAD" || request.method === "OPTIONS") {
+    return false;
+  }
+
+  if (request.raw.url.startsWith("/api/public/")) {
+    return false;
+  }
+
+  if (request.raw.url.startsWith("/api/auth/login")) {
+    return false;
+  }
+
+  return true;
+}
+
+function hasUnsafePublicEditRequest(request: FastifyRequest): boolean {
+  const origin = request.headers.origin;
+  const secFetchSite = request.headers["sec-fetch-site"];
+
+  if (secFetchSite === "cross-site") {
+    return true;
+  }
+
+  if (!origin) {
+    return false;
+  }
+
+  try {
+    const requestOrigin = new URL(origin);
+    const appOrigin = new URL(config.appUrl);
+
+    if (requestOrigin.origin === appOrigin.origin) {
+      return false;
+    }
+
+    const localhostHosts = new Set(["localhost", "127.0.0.1"]);
+    const sameLocalhostTarget =
+      localhostHosts.has(requestOrigin.hostname) &&
+      localhostHosts.has(appOrigin.hostname) &&
+      requestOrigin.port === appOrigin.port;
+
+    return !sameLocalhostTarget;
+  } catch {
+    return true;
+  }
+}
+
+function hasJsonContentType(request: FastifyRequest): boolean {
+  const contentType = request.headers["content-type"];
+  return typeof contentType === "string" && contentType.toLowerCase().startsWith("application/json");
+}
+
 function isExplicitlyBlockedPath(url: string | undefined): boolean {
   if (!url) {
     return false;
   }
 
-  const pathname = url.split("?")[0].toLowerCase();
+  const rawPathname = url.split("?")[0];
+  const pathname = rawPathname.toLowerCase();
+  let decodedPathname = pathname;
+
+  try {
+    decodedPathname = decodeURIComponent(pathname);
+  } catch {
+    decodedPathname = pathname;
+  }
+
   return (
     pathname === "/data" ||
     pathname.startsWith("/data/") ||
     pathname === "/notes" ||
     pathname.startsWith("/notes/") ||
+    decodedPathname.includes("..") ||
+    decodedPathname.includes("\\") ||
     pathname.endsWith(".sqlite") ||
     pathname.endsWith(".db")
   );
@@ -108,16 +183,35 @@ function validateSettings(body: Record<string, unknown>): InstanceSettings {
         : body.defaultTheme === "system"
           ? "system"
           : undefined;
-  const shareSlugLength = typeof body.shareSlugLength === "number" ? body.shareSlugLength : Number.parseInt(String(body.shareSlugLength ?? ""), 10);
+  const defaultReadSlugLength =
+    typeof body.defaultReadSlugLength === "number"
+      ? body.defaultReadSlugLength
+      : Number.parseInt(String(body.defaultReadSlugLength ?? ""), 10);
+  const defaultEditSlugLength =
+    typeof body.defaultEditSlugLength === "number"
+      ? body.defaultEditSlugLength
+      : Number.parseInt(String(body.defaultEditSlugLength ?? ""), 10);
   const shareCharset = typeof body.shareCharset === "string" ? body.shareCharset : undefined;
 
-  if (!defaultTheme || !Number.isFinite(shareSlugLength) || shareSlugLength < 4 || shareSlugLength > 64 || !shareCharset || shareCharset.length === 0 || shareCharset.length > 128) {
+  if (
+    !defaultTheme ||
+    !Number.isFinite(defaultReadSlugLength) ||
+    defaultReadSlugLength < 8 ||
+    defaultReadSlugLength > 64 ||
+    !Number.isFinite(defaultEditSlugLength) ||
+    defaultEditSlugLength < 16 ||
+    defaultEditSlugLength > 64 ||
+    !shareCharset ||
+    shareCharset.length === 0 ||
+    shareCharset.length > 128
+  ) {
     throw new Error("Invalid settings");
   }
 
   return {
     defaultTheme,
-    shareSlugLength,
+    defaultReadSlugLength,
+    defaultEditSlugLength,
     shareCharset
   };
 }
@@ -179,6 +273,18 @@ async function buildUserSummary(user: UserRecord) {
   };
 }
 
+function toSessionSummary(session: SessionRecord, currentSessionId?: number) {
+  return {
+    id: session.id,
+    current: session.id === currentSessionId,
+    createdAt: session.created_at,
+    expiresAt: session.expires_at,
+    lastUsedAt: session.last_used_at ?? session.created_at,
+    ip: session.ip ?? "unknown",
+    userAgent: session.user_agent ?? "unknown"
+  };
+}
+
 async function buildServer() {
   await initializeDatabase();
 
@@ -216,11 +322,22 @@ async function buildServer() {
       request.raw.url?.startsWith("/icons/") ||
       request.raw.url?.startsWith("/og/") ||
       request.raw.url?.startsWith("/api/auth/login") ||
+      request.raw.url?.startsWith("/api/public/edit/") ||
       request.raw.url?.startsWith("/api/public/shares/") ||
-      request.raw.url?.startsWith("/s/");
+      request.raw.url?.startsWith("/s/") ||
+      request.raw.url?.startsWith("/e/");
 
     if (request.raw.url?.startsWith("/api/") && !request.raw.url.startsWith("/api/auth/login")) {
       if (request.raw.url.startsWith("/api/public/shares/")) {
+        if (request.method !== "GET" && (!hasJsonContentType(request) || hasUnsafePublicEditRequest(request))) {
+          return reply.status(403).send({ message: "Forbidden" });
+        }
+        return;
+      }
+      if (request.raw.url.startsWith("/api/public/edit/")) {
+        if (request.method !== "GET" && (!hasJsonContentType(request) || hasUnsafePublicEditRequest(request))) {
+          return reply.status(403).send({ message: "Forbidden" });
+        }
         return;
       }
       if (hasUnsafeCrossOrigin(request)) {
@@ -235,6 +352,16 @@ async function buildServer() {
       await requireAuth(request, reply);
       if (reply.sent) {
         return reply;
+      }
+      if (requiresCsrfProtection(request) && !hasValidCsrfToken(request)) {
+        logWarn("CSRF_BLOCKED", {
+          method: request.method,
+          url: request.url,
+          origin: request.headers.origin ?? "none",
+          secFetchSite: request.headers["sec-fetch-site"] ?? "none",
+          appUrl: config.appUrl
+        });
+        return reply.status(403).send({ message: "Forbidden" });
       }
     } else if (!request.raw.url?.startsWith("/api/") && !isAssetRequest) {
       const user = getAuthenticatedUser(request);
@@ -290,7 +417,7 @@ async function buildServer() {
       return reply.status(401).send({ message: "Invalid username or password" });
     }
 
-    const token = createSession(user.id);
+    const token = createSession(user.id, ip, request.headers["user-agent"] ?? undefined);
     setSessionCookie(reply, token);
     logInfo("LOGIN", {
       username: user.username,
@@ -307,6 +434,7 @@ async function buildServer() {
       deleteSessionByToken(token);
     }
     clearSessionCookie(reply);
+    clearCsrfCookie(reply);
     logInfo("LOGOUT", {
       username: user?.username ?? "unknown",
       ip: getClientIp(request)
@@ -320,6 +448,67 @@ async function buildServer() {
       return reply.status(401).send({ message: "Unauthorized" });
     }
     return reply.send({ user: { username: user.username, role: user.role } });
+  });
+
+  app.get("/api/me/sessions", async (request, reply) => {
+    const currentSessionId = getCurrentSessionId(request);
+    const sessions = listSessionsForUser(request.user!.id).map((session) => toSessionSummary(session, currentSessionId));
+    return reply.send({ sessions });
+  });
+
+  app.delete("/api/me/sessions/:id", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const numericId = Number.parseInt(id, 10);
+    if (!Number.isFinite(numericId)) {
+      return reply.status(400).send({ message: "Invalid request body" });
+    }
+
+    const session = getSessionById(numericId);
+    if (!session || session.user_id !== request.user!.id) {
+      return reply.status(404).send({ message: "Not found" });
+    }
+
+    const currentSessionId = getCurrentSessionId(request);
+    deleteSessionById(numericId);
+    if (currentSessionId === numericId) {
+      clearSessionCookie(reply);
+      clearCsrfCookie(reply);
+    }
+    return reply.send({ success: true, revokedCurrent: currentSessionId === numericId });
+  });
+
+  app.post("/api/me/sessions/revoke-others", async (request, reply) => {
+    const currentSessionId = getCurrentSessionId(request);
+    deleteSessionsForUser(request.user!.id, currentSessionId);
+    return reply.send({ success: true });
+  });
+
+  app.post("/api/me/password", async (request, reply) => {
+    const body = request.body as { currentPassword?: unknown; newPassword?: unknown };
+    const currentPassword = typeof body.currentPassword === "string" ? body.currentPassword : "";
+    const newPassword = typeof body.newPassword === "string" ? body.newPassword : "";
+    if (!currentPassword || newPassword.length < 8) {
+      return reply.status(400).send({ message: "Invalid request body" });
+    }
+
+    const user = findUserByUsername(request.user!.username);
+    if (!user) {
+      return reply.status(404).send({ message: "Not found" });
+    }
+
+    const valid = await verifyPassword(user.password_hash, currentPassword);
+    if (!valid) {
+      return reply.status(401).send({ message: "Invalid username or password" });
+    }
+
+    const passwordHash = await hashPassword(newPassword);
+    getDb().prepare("UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?").run(passwordHash, new Date().toISOString(), user.id);
+    rotateCurrentSession(request, reply);
+    logInfo("PASSWORD_CHANGED", {
+      username: user.username,
+      ip: getClientIp(request)
+    });
+    return reply.send({ success: true });
   });
 
   app.get("/api/settings", async (_request, reply) => {
@@ -422,17 +611,27 @@ async function buildServer() {
   app.put("/api/shares/:filename", async (request, reply) => {
     const { filename } = request.params as { filename: string };
     const body = request.body as {
-      enabled?: unknown;
-      customSlug?: unknown;
+      readEnabled?: unknown;
+      editEnabled?: unknown;
+      readCustomSlug?: unknown;
+      editCustomSlug?: unknown;
       passwordEnabled?: unknown;
       password?: unknown;
+      expiresAt?: unknown;
+      regenerateRead?: unknown;
+      regenerateEdit?: unknown;
     };
-    const enabled = parseBooleanFlag(body.enabled);
+    const readEnabled = parseBooleanFlag(body.readEnabled);
+    const editEnabled = parseBooleanFlag(body.editEnabled);
     const passwordEnabled = parseBooleanFlag(body.passwordEnabled);
-    const customSlug = typeof body.customSlug === "string" ? body.customSlug : undefined;
+    const readCustomSlug = typeof body.readCustomSlug === "string" ? body.readCustomSlug : undefined;
+    const editCustomSlug = typeof body.editCustomSlug === "string" ? body.editCustomSlug : undefined;
     const password = typeof body.password === "string" ? body.password : undefined;
+    const expiresAt = typeof body.expiresAt === "string" ? body.expiresAt : undefined;
+    const regenerateRead = parseBooleanFlag(body.regenerateRead) ?? false;
+    const regenerateEdit = parseBooleanFlag(body.regenerateEdit) ?? false;
 
-    if (enabled === undefined || passwordEnabled === undefined) {
+    if (readEnabled === undefined || editEnabled === undefined || passwordEnabled === undefined) {
       return reply.status(400).send({ message: "Invalid request body" });
     }
 
@@ -444,16 +643,22 @@ async function buildServer() {
     const share = await upsertShareForUser({
       user: request.user!,
       filename,
-      enabled,
-      customSlug,
+      readEnabled,
+      editEnabled,
+      readCustomSlug,
+      editCustomSlug,
       passwordEnabled,
-      password
+      password,
+      expiresAt,
+      regenerateRead,
+      regenerateEdit
     });
 
     logInfo(share ? "SHARE_UPSERTED" : "SHARE_DISABLED", {
       username: request.user!.username,
       filename,
-      slug: share?.slug ?? null,
+      readSlug: share?.readSlug ?? null,
+      editSlug: share?.editSlug ?? null,
       password: share?.hasPassword ?? false
     });
 
@@ -472,7 +677,7 @@ async function buildServer() {
 
   app.get("/api/public/shares/:slug", async (request, reply) => {
     const { slug } = request.params as { slug: string };
-    const result = await accessPublicShare(slug);
+    const result = await accessPublicShare(slug, undefined, getClientIp(request));
     return reply.send(result);
   });
 
@@ -480,8 +685,100 @@ async function buildServer() {
     const { slug } = request.params as { slug: string };
     const body = request.body as { password?: unknown };
     const password = typeof body.password === "string" ? body.password : undefined;
-    const result = await accessPublicShare(slug, password);
+    const result = await accessPublicShare(slug, password, getClientIp(request));
     return reply.send(result);
+  });
+
+  app.post("/api/public/edit/:slug/verify", async (request, reply) => {
+    const { slug } = request.params as { slug: string };
+    const body = request.body as { password?: unknown };
+    const password = typeof body.password === "string" ? body.password : undefined;
+    let share;
+    try {
+      share = await verifyPublicEditAccess(slug, password, getClientIp(request));
+    } catch (error) {
+      const shareRecord = getShareByEditSlug(slug);
+      if (error instanceof Error && error.message === "Invalid share password") {
+        logWarn("PUBLIC_EDIT_DENIED", {
+          slug,
+          filename: shareRecord?.filename ?? "unknown",
+          ip: getClientIp(request),
+          userAgent: request.headers["user-agent"] ?? "unknown"
+        });
+      }
+      throw error;
+    }
+    const token = createPublicEditGrantToken(share);
+
+    reply.setCookie(PUBLIC_EDIT_COOKIE, token, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: config.cookieSecure,
+      domain: config.cookieDomain,
+      path: "/",
+      maxAge: 12 * 60 * 60
+    });
+
+    return reply.send({ success: true });
+  });
+
+  app.get("/api/public/edit/:slug", async (request, reply) => {
+    const { slug } = request.params as { slug: string };
+    const share = getShareByEditSlug(slug);
+    if (!share) {
+      return reply.status(404).send({ message: "Not found" });
+    }
+
+    const hasAccess = !share.password_hash || hasPublicEditGrant(share, request.cookies[PUBLIC_EDIT_COOKIE]);
+    const result = await openPublicEdit(slug, hasAccess);
+    if (!result.requiresPassword) {
+      logInfo("PUBLIC_EDIT_OPENED", {
+        slug,
+        filename: result.filename ?? "unknown",
+        ip: getClientIp(request),
+        userAgent: request.headers["user-agent"] ?? "unknown"
+      });
+    }
+    return reply.send(result);
+  });
+
+  app.put("/api/public/edit/:slug", async (request, reply) => {
+    const { slug } = request.params as { slug: string };
+    const body = request.body as { content?: unknown };
+    if (typeof body?.content !== "string") {
+      return reply.status(400).send({ message: "Invalid request body" });
+    }
+
+    const share = getShareByEditSlug(slug);
+    if (!share) {
+      logWarn("PUBLIC_EDIT_DENIED", {
+        slug,
+        filename: "unknown",
+        ip: getClientIp(request),
+        userAgent: request.headers["user-agent"] ?? "unknown"
+      });
+      return reply.status(404).send({ message: "Not found" });
+    }
+
+    const hasAccess = !share.password_hash || hasPublicEditGrant(share, request.cookies[PUBLIC_EDIT_COOKIE]);
+    if (!hasAccess) {
+      logWarn("PUBLIC_EDIT_DENIED", {
+        slug,
+        filename: share.filename,
+        ip: getClientIp(request),
+        userAgent: request.headers["user-agent"] ?? "unknown"
+      });
+      return reply.status(403).send({ message: "Forbidden" });
+    }
+
+    const result = await savePublicEdit(slug, body.content);
+    logInfo("PUBLIC_EDIT_SAVED", {
+      slug,
+      filename: result.filename,
+      ip: getClientIp(request),
+      userAgent: request.headers["user-agent"] ?? "unknown"
+    });
+    return reply.send({ success: true, filename: result.filename, editCount: result.editCount });
   });
 
   app.get("/api/admin/users", async (request, reply) => {
@@ -554,6 +851,7 @@ async function buildServer() {
 
     const passwordHash = await hashPassword(password);
     getDb().prepare("UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?").run(passwordHash, new Date().toISOString(), id);
+    deleteSessionsForUser(target.id);
     logInfo("USER_PASSWORD_RESET", {
       admin: request.user!.username,
       username: target.username
@@ -615,6 +913,9 @@ async function buildServer() {
     }
 
     getDb().prepare("UPDATE users SET blocked = ?, updated_at = ? WHERE id = ?").run(blocked ? 1 : 0, new Date().toISOString(), id);
+    if (blocked) {
+      deleteSessionsForUser(target.id);
+    }
     logInfo(blocked ? "USER_BLOCKED" : "USER_UNBLOCKED", {
       admin: request.user!.username,
       username: target.username
@@ -638,6 +939,7 @@ async function buildServer() {
       return reply.status(400).send({ message: "Cannot delete current admin session" });
     }
 
+    deleteSessionsForUser(target.id);
     getDb().prepare("DELETE FROM users WHERE id = ?").run(id);
     fs.rmSync(resolveUserNotesDir(target.username), { recursive: true, force: true });
     logInfo("USER_DELETED", {
@@ -668,7 +970,8 @@ async function buildServer() {
     logInfo("SETTINGS_UPDATED", {
       admin: request.user!.username,
       defaultTheme: updated.defaultTheme,
-      shareSlugLength: updated.shareSlugLength
+      defaultReadSlugLength: updated.defaultReadSlugLength,
+      defaultEditSlugLength: updated.defaultEditSlugLength
     });
     return reply.send({ settings: updated });
   });
@@ -718,19 +1021,25 @@ async function buildServer() {
 
     const { id } = request.params as { id: string };
     const body = request.body as {
+      kind?: unknown;
       customSlug?: unknown;
       passwordEnabled?: unknown;
       password?: unknown;
+      regenerate?: unknown;
+      expiresAt?: unknown;
     };
     const numericId = Number.parseInt(id, 10);
     if (!Number.isFinite(numericId)) {
       return reply.status(400).send({ message: "Invalid request body" });
     }
 
+    const kind = body.kind === "edit" ? "edit" : body.kind === "read" ? "read" : undefined;
     const passwordEnabled = parseBooleanFlag(body.passwordEnabled);
     const customSlug = typeof body.customSlug === "string" ? body.customSlug : undefined;
     const password = typeof body.password === "string" ? body.password : undefined;
-    if (passwordEnabled === undefined && customSlug === undefined) {
+    const regenerate = parseBooleanFlag(body.regenerate);
+    const expiresAt = typeof body.expiresAt === "string" ? body.expiresAt : undefined;
+    if (passwordEnabled === undefined && customSlug === undefined && regenerate === undefined && expiresAt === undefined) {
       return reply.status(400).send({ message: "Invalid request body" });
     }
 
@@ -741,15 +1050,19 @@ async function buildServer() {
 
     const updated = await updateShareById({
       id: numericId,
+      kind,
       customSlug,
       passwordEnabled,
-      password
+      password,
+      regenerate: regenerate ?? false,
+      expiresAt
     });
 
     logInfo("ADMIN_SHARE_UPDATED", {
       admin: request.user!.username,
       shareId: numericId,
-      slug: updated.slug
+      readSlug: updated.readSlug,
+      editSlug: updated.editSlug
     });
     return reply.send({ share: updated });
   });
@@ -776,6 +1089,60 @@ async function buildServer() {
       admin: request.user!.username,
       shareId: numericId
     });
+    return reply.send({ success: true });
+  });
+
+  app.get("/api/admin/users/:id/sessions", async (request, reply) => {
+    await requireAdmin(request, reply);
+    if (reply.sent) {
+      return;
+    }
+
+    const { id } = request.params as { id: string };
+    const numericId = Number.parseInt(id, 10);
+    if (!Number.isFinite(numericId)) {
+      return reply.status(400).send({ message: "Invalid request body" });
+    }
+
+    const target = getDb().prepare("SELECT * FROM users WHERE id = ?").get(numericId) as UserRecord | undefined;
+    if (!target) {
+      return reply.status(404).send({ message: "Not found" });
+    }
+
+    const sessions = listSessionsForUser(target.id).map((session) => toSessionSummary(session));
+    return reply.send({
+      user: {
+        id: target.id,
+        username: target.username,
+        role: target.role
+      },
+      sessions
+    });
+  });
+
+  app.delete("/api/admin/sessions/:id", async (request, reply) => {
+    await requireAdmin(request, reply);
+    if (reply.sent) {
+      return;
+    }
+
+    const { id } = request.params as { id: string };
+    const numericId = Number.parseInt(id, 10);
+    if (!Number.isFinite(numericId)) {
+      return reply.status(400).send({ message: "Invalid request body" });
+    }
+
+    const session = getSessionById(numericId);
+    if (!session) {
+      return reply.status(404).send({ message: "Not found" });
+    }
+
+    const currentSessionId = getCurrentSessionId(request);
+    deleteSessionById(numericId);
+    if (currentSessionId === numericId) {
+      clearSessionCookie(reply);
+      clearCsrfCookie(reply);
+    }
     return reply.send({ success: true });
   });
 
@@ -872,6 +1239,7 @@ async function buildServer() {
       message === "Invalid username" ||
       message === "Invalid settings" ||
       message === "Invalid share slug" ||
+      message === "Invalid share expiration" ||
       message === "Share password is required" ||
       message === "Could not generate unique share slug" ||
       message === "Share slug already exists" ||
@@ -880,7 +1248,24 @@ async function buildServer() {
     const notFound = isErrorWithCode(error) && error.code === "ENOENT";
     const notFoundByMessage = message === "Share not found";
     const authByMessage = message === "Invalid share password";
-    const statusCode = authByMessage ? 401 : notFound || notFoundByMessage ? 404 : isValidationLike ? 400 : 500;
+    const rateLimitedByMessage = message === "Public link rate limited" || message === "Public edit rate limited";
+    const statusCode = rateLimitedByMessage ? 429 : authByMessage ? 401 : notFound || notFoundByMessage ? 404 : isValidationLike ? 400 : 500;
+
+    if (message === "Public edit rate limited") {
+      logWarn("PUBLIC_EDIT_RATE_LIMITED", {
+        slug: typeof (request.params as { slug?: string } | undefined)?.slug === "string" ? (request.params as { slug?: string }).slug : "unknown",
+        ip: getClientIp(request),
+        userAgent: request.headers["user-agent"] ?? "unknown"
+      });
+    }
+
+    if (message === "Public link rate limited") {
+      logWarn("PUBLIC_SHARE_RATE_LIMITED", {
+        slug: typeof (request.params as { slug?: string } | undefined)?.slug === "string" ? (request.params as { slug?: string }).slug : "unknown",
+        ip: getClientIp(request),
+        userAgent: request.headers["user-agent"] ?? "unknown"
+      });
+    }
 
     logError("REQUEST_ERROR", {
       method: request.method,
@@ -891,7 +1276,7 @@ async function buildServer() {
     });
 
     reply.status(statusCode).send({
-      message: notFound ? "Not found" : authByMessage ? "Invalid password" : isValidationLike ? message : "Internal server error"
+      message: rateLimitedByMessage ? "Too many attempts" : notFound ? "Not found" : authByMessage ? "Invalid password" : isValidationLike ? message : "Internal server error"
     });
   });
 
@@ -925,13 +1310,24 @@ async function buildServer() {
     app.get("/dashboard", async (_request, reply) => reply.type("text/html; charset=utf-8").send(renderSpaHtml(clientRoot)));
     app.get("/s/:slug", async (request, reply) => {
       const { slug } = request.params as { slug: string };
-      const share = getShareBySlug(slug);
+      const share = getShareByReadSlug(slug);
       const title = share?.password_hash
         ? "Protected TextBin Note"
         : share?.filename.replace(/\.txt$/i, "") || "Shared Note";
       const description = share?.password_hash
         ? "Password-protected shared note from TextBin."
         : `Public shared note: ${title}`;
+      return reply
+        .type("text/html; charset=utf-8")
+        .send(renderSpaHtml(clientRoot, { title, description }));
+    });
+    app.get("/e/:slug", async (request, reply) => {
+      const { slug } = request.params as { slug: string };
+      const share = getShareByEditSlug(slug);
+      const title = share?.password_hash ? "Protected Editable TextBin Note" : "Editable TextBin Note";
+      const description = share?.password_hash
+        ? "Password-protected editable note from TextBin."
+        : "Anyone with this link can edit this note.";
       return reply
         .type("text/html; charset=utf-8")
         .send(renderSpaHtml(clientRoot, { title, description }));

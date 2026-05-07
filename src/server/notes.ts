@@ -154,6 +154,16 @@ export async function updateNote(username: string, filename: string, content: st
   await fs.writeFile(resolveNotePath(username, filename), content, "utf8");
 }
 
+export async function createRevisionBackup(username: string, filename: string): Promise<void> {
+  const sourcePath = resolveNotePath(username, filename);
+  const backupsDir = path.join(resolveUserNotesDir(username), ".revisions");
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const backupFilename = `${filename}.${timestamp}.bak`;
+
+  await fs.mkdir(backupsDir, { recursive: true });
+  await fs.copyFile(sourcePath, path.join(backupsDir, backupFilename));
+}
+
 export async function renameNote(username: string, filename: string, title: string): Promise<NoteMeta> {
   const nextFilename = await getUniqueFilename(username, sanitizeTitleToFilename(title));
   if (nextFilename === filename) {

@@ -23,6 +23,28 @@ function parseBoolean(name: string, fallback: string): boolean {
   return raw === "true";
 }
 
+function parseOptionalCookieDomain(): string | undefined {
+  const raw = (process.env.COOKIE_DOMAIN ?? "").trim().toLowerCase();
+  if (!raw) {
+    return undefined;
+  }
+
+  if (raw.includes("://") || raw.includes("/") || raw.includes(" ") || raw.includes(":")) {
+    throw new Error("Invalid COOKIE_DOMAIN");
+  }
+
+  if (!/^[a-z0-9.-]+$/.test(raw) || raw.startsWith(".") || raw.endsWith(".")) {
+    throw new Error("Invalid COOKIE_DOMAIN");
+  }
+
+  const appHost = new URL(requireEnv("APP_URL", "http://localhost:3000")).hostname.toLowerCase();
+  if (appHost !== raw && !appHost.endsWith(`.${raw}`)) {
+    throw new Error("COOKIE_DOMAIN must match APP_URL hostname or a parent domain");
+  }
+
+  return raw;
+}
+
 export const config = {
   nodeEnv: process.env.NODE_ENV ?? "development",
   appUrl: requireEnv("APP_URL", "http://localhost:3000"),
@@ -37,15 +59,17 @@ export const config = {
   loginAttemptWindowMinutes: parsePositiveInt("LOGIN_ATTEMPT_WINDOW_MINUTES", "10"),
   loginBlockMinutes: parsePositiveInt("LOGIN_BLOCK_MINUTES", "15"),
   cookieSecure: parseBoolean("COOKIE_SECURE", "false"),
+  cookieDomain: parseOptionalCookieDomain(),
   trustProxy: parseBoolean("TRUST_PROXY", "true"),
   port: parsePositiveInt("PORT", "3000"),
-  sessionDays: 14
+  sessionDays: parsePositiveInt("SESSION_DAYS", "14")
 };
 
 export const isProduction = config.nodeEnv === "production";
 
 export const defaultInstanceSettings: InstanceSettings = {
   defaultTheme: "dark",
-  shareSlugLength: 10,
+  defaultReadSlugLength: 8,
+  defaultEditSlugLength: 16,
   shareCharset: "abcdefghijklmnopqrstuvwxyz0123456789"
 };
