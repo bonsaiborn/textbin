@@ -252,7 +252,7 @@ TextBin is intentionally small, but it still tries to avoid the obvious footguns
 - Password-protected share previews do not reveal the note title in page metadata
 - Mutating authenticated API requests are guarded by `Origin`, `Sec-Fetch-Site`, and CSRF checks
 - Suspicious direct paths such as `/data/*`, `/notes/*`, `*.sqlite`, and `*.db` are blocked with `404`
-```
+
 
 ## Known Limitations
 
