@@ -65,8 +65,9 @@ If you want to try it, you have to run it. 🙂
 - Plain text notes stored as real files
 - Per-user note directories
 - Admin panel for users, shares, notes, and instance settings
-- Optional public share links
-- Optional passwords for public shares
+- Account settings for sessions, password changes, and personal shares
+- Optional public read-only and editable links
+- Optional passwords and expiration for public links
 - Mobile and desktop UI
 - Single-container Docker deployment
 
@@ -93,14 +94,17 @@ If the app disappears tomorrow, your notes are still readable as normal text fil
 - Sorting by newest, oldest, name A-Z, and name Z-A
 - Create, edit, rename, download, and delete notes
 - Login rate limiting by username and IP
+- Account settings for session management, password change, and personal shares
 - Optional public links for notes
 - Optional password protection for public links
-- Separate read-only and editable public links
+- Optional expiration for public links
+- Separate read-only and editable public links under `/s/:slug` and `/e/:slug`
 - View counts for public links
 - Edit counts for editable public links
+- Revision backups before public edit overwrites
 - Admin-only user management
+- Admin session review and revoke tools
 - Admin-only instance settings
-- Account settings for password changes and session management
 - Dark, light, and system theme support
 
 ## Storage Model
@@ -161,7 +165,7 @@ mkdir -p data/notes
 ```yaml
 services:
   textbin:
-    image: bonsaiborn/textbin:v3
+    image: bonsaiborn/textbin:v5
     container_name: textbin
     ports:
       - "127.0.0.1:3001:3000"
@@ -280,10 +284,12 @@ TextBin is intentionally small, but it still tries to avoid the obvious footguns
 - The container runs as a non-root user
 - Public share links support separate read-only and editable modes
 - Password-protected public share attempts are rate-limited
+- Password-protected public edit access attempts are rate-limited
 - Password-protected share previews do not reveal the note title in page metadata
+- Public edit saves create revision backups before overwriting note content
 - Mutating authenticated API requests are guarded by `Origin`, `Sec-Fetch-Site`, and CSRF checks
 - Suspicious direct paths such as `/data/*`, `/notes/*`, `*.sqlite`, and `*.db` are blocked with `404`
-
+- `robots.txt`, meta `noindex`, and `X-Robots-Tag` are used to discourage indexing
 
 ## Known Limitations
 
