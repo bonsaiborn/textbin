@@ -153,7 +153,9 @@ SQLite is used for app state. The note files are just note files. Very advanced 
 1. Create a project directory and prepare the data folder:
 
 ```bash
-mkdir -p data/notes
+sudo mkdir -p data/notes
+sudo chown -R 100:101 data
+sudo chmod -R 700 data
 ```
 
 > [!CAUTION]
