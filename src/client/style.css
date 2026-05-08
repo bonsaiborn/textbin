@@ -223,6 +223,8 @@
 
   --accent: var(--vp-c-brand-2);
   --accent-strong: var(--vp-c-brand-1);
+  --admin-role-soft: #dfb43124;
+  --admin-role-text: var(--flexoki-yellow-700);
   --danger: var(--vp-c-red-2);
   --danger-soft: var(--vp-c-red-soft);
   --panel-bg: color-mix(in srgb, var(--vp-c-bg-elv) 88%, white 12%);
@@ -282,6 +284,8 @@
 
   --accent: var(--vp-c-brand-2);
   --accent-strong: var(--vp-c-brand-1);
+  --admin-role-soft: #dfb43129;
+  --admin-role-text: var(--flexoki-yellow-200);
   --danger: var(--vp-c-red-2);
   --danger-soft: var(--vp-c-red-soft);
   --panel-bg: color-mix(in srgb, var(--vp-c-bg-elv) 92%, black 8%);

@@ -117,15 +117,18 @@ function getOwnerForShare(record: ShareRecord): UserRecord | undefined {
 }
 
 export function toShareSummary(record: ShareRecord): ShareSummary {
+  const hasReadLink = Boolean(record.read_enabled && record.read_slug);
+  const hasEditLink = Boolean(record.edit_enabled && record.edit_slug);
+
   return {
     filename: record.filename,
     state: getShareState(record),
-    readEnabled: Boolean(record.read_enabled),
-    readSlug: record.read_slug,
-    readUrlPath: record.read_slug ? `/s/${record.read_slug}` : null,
-    editEnabled: Boolean(record.edit_enabled),
-    editSlug: record.edit_slug,
-    editUrlPath: record.edit_slug ? `/e/${record.edit_slug}` : null,
+    readEnabled: hasReadLink,
+    readSlug: hasReadLink ? record.read_slug : null,
+    readUrlPath: hasReadLink ? `/s/${record.read_slug}` : null,
+    editEnabled: hasEditLink,
+    editSlug: hasEditLink ? record.edit_slug : null,
+    editUrlPath: hasEditLink ? `/e/${record.edit_slug}` : null,
     hasPassword: Boolean(record.password_hash),
     expiresAt: record.expires_at,
     viewCount: record.view_count,
@@ -377,13 +380,25 @@ export async function updateShareById(options: {
     throw new Error("Share not found");
   }
 
-  const kind = options.kind ?? "read";
-  const readSlug = kind === "read"
-    ? await resolveSlug("read", share, options.customSlug, Boolean(options.regenerate))
-    : share.read_slug;
-  const editSlug = kind === "edit"
-    ? await resolveSlug("edit", share, options.customSlug, Boolean(options.regenerate))
-    : share.edit_slug;
+  const readEnabled = Boolean(share.read_enabled);
+  const editEnabled = Boolean(share.edit_enabled);
+  const updateReadSlug = options.kind === "read";
+  const updateEditSlug = options.kind === "edit";
+
+  const readSlug = updateReadSlug
+    ? readEnabled
+      ? await resolveSlug("read", share, options.customSlug, Boolean(options.regenerate))
+      : null
+    : readEnabled
+      ? share.read_slug
+      : null;
+  const editSlug = updateEditSlug
+    ? editEnabled
+      ? await resolveSlug("edit", share, options.customSlug, Boolean(options.regenerate))
+      : null
+    : editEnabled
+      ? share.edit_slug
+      : null;
 
   let passwordHash = share.password_hash;
   if (options.passwordEnabled === false) {

@@ -14,6 +14,45 @@ Just login, create a note, write text, save it as a real `.txt` file, and move o
 
 It is built with Vue 3, TypeScript, Tailwind CSS, Fastify, and SQLite. Note contents are stored as real `.txt` files on disk. SQLite is used only for application data such as users, sessions, login attempts, instance settings, and share records.
 
+## Screenshots
+
+### Login page
+<details>
+<img src="docs/screenshots/desktop-login.png" alt="desktop-login">
+<img src="docs/screenshots/desktop-login-light.png" alt="desktop-login-light">
+</details>
+
+### Dashboard
+<details>
+<img src="docs/screenshots/desktop-dashboard.png" alt="desktop-dashboard">
+<img src="docs/screenshots/desktop-dashboard-dropdown.png" alt="desktop-dashboard">
+<img src="docs/screenshots/desktop-create-note.png" alt="desktop-create-note">
+<img src="docs/screenshots/desktop-edit-note.png" alt="desktop-edit-note">
+<img src="docs/screenshots/mobile-dashboard.png" alt="desktop-edit-note">
+</details>
+
+### Account panel
+<details>
+<img src="docs/screenshots/desktop-account-sessions.png" alt="desktop-dashboard">
+<img src="docs/screenshots/desktop-account-shares.png" alt="desktop-account-shares">
+<img src="docs/screenshots/desktop-account-change-password.png" alt="desktop-account-change-password">
+</details>
+
+### Admin panel
+<details>
+<img src="docs/screenshots/desktop-admin-users.png" alt="desktop-admin-users">
+<img src="docs/screenshots/desktop-admin-shares.png" alt="desktop-admin-shares">
+<img src="docs/screenshots/desktop-admin-notes.png" alt="desktop-admin-notes">
+<img src="docs/screenshots/desktop-admin-settings.png" alt="desktop-admin-settings.png">
+</details>
+
+### Public links
+<details>
+<img src="docs/screenshots/desktop-public-read-only.png" alt="desktop-public-read-only">
+<img src="docs/screenshots/desktop-public-edit-only.png" alt="desktop-public-edit-only">
+</details>
+
+
 ## Demo
 
 There is no public demo.
@@ -63,14 +102,6 @@ If the app disappears tomorrow, your notes are still readable as normal text fil
 - Admin-only instance settings
 - Account settings for password changes and session management
 - Dark, light, and system theme support
-
-## Screenshots
-
-![Login](docs/screenshots/login.png)
-![Dashboard](docs/screenshots/dashboard.png)
-![Admin Users](docs/screenshots/admin-users.png)
-![Public Share](docs/screenshots/public-share.png)
-![Mobile](docs/screenshots/mobile.png)
 
 ## Storage Model
 

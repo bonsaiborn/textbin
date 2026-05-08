@@ -162,7 +162,8 @@ const state = reactive({
   publicEditRequiresPassword: false,
   publicEditLoading: false,
   publicEditSaving: false,
-  publicEditError: ""
+  publicEditError: "",
+  publicEditSuccess: ""
 });
 
 let autosaveTimer: number | undefined;
@@ -238,6 +239,8 @@ const publicStatusText = computed(() => {
   return "Private note";
 });
 
+const SORT_STORAGE_KEY = "textbin-sort";
+
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (init?.body && !headers.has("Content-Type")) {
@@ -281,6 +284,50 @@ function getCookieValue(name: string): string {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = document.cookie.match(new RegExp(`(?:^|; )${escaped}=([^;]*)`));
   return match ? decodeURIComponent(match[1]) : "";
+}
+
+function formatUserAgentLabel(userAgent: string): string {
+  const source = (userAgent || "").trim();
+  if (!source || source === "unknown") {
+    return "Unknown browser / device";
+  }
+
+  const normalized = source.toLowerCase();
+
+  let browser = "Unknown browser";
+  if (normalized.includes("edg/")) {
+    browser = "Microsoft Edge";
+  } else if (normalized.includes("opr/") || normalized.includes("opera/")) {
+    browser = "Opera";
+  } else if (normalized.includes("firefox/")) {
+    browser = "Firefox";
+  } else if (normalized.includes("chrome/") && !normalized.includes("edg/") && !normalized.includes("opr/")) {
+    browser = "Chrome";
+  } else if (normalized.includes("safari/") && !normalized.includes("chrome/")) {
+    browser = "Safari";
+  }
+
+  let os = "Unknown OS";
+  if (normalized.includes("windows")) {
+    os = "Windows";
+  } else if (normalized.includes("android")) {
+    os = "Android";
+  } else if (normalized.includes("iphone") || normalized.includes("ipad") || normalized.includes("ios")) {
+    os = "iOS";
+  } else if (normalized.includes("mac os x") || normalized.includes("macintosh")) {
+    os = "macOS";
+  } else if (normalized.includes("linux")) {
+    os = "Linux";
+  }
+
+  let device = "Desktop";
+  if (normalized.includes("ipad") || normalized.includes("tablet")) {
+    device = "Tablet";
+  } else if (normalized.includes("mobile") || normalized.includes("iphone") || normalized.includes("android")) {
+    device = "Phone";
+  }
+
+  return `${browser} on ${os} (${device})`;
 }
 
 function resolveThemeSetting(theme: ThemeSetting): ThemeMode {
@@ -451,6 +498,7 @@ async function loadPublicEdit() {
 
   state.publicEditLoading = true;
   state.publicEditError = "";
+  state.publicEditSuccess = "";
   try {
     const payload = await api<{ filename?: string; content?: string; requiresPassword: boolean }>(
       `/api/public/edit/${encodeURIComponent(state.publicEditSlug)}`
@@ -484,8 +532,21 @@ async function loadNotes() {
   }
 }
 
+function persistSortSelection() {
+  window.localStorage.setItem(SORT_STORAGE_KEY, state.sort);
+}
+
+async function changeSort() {
+  persistSortSelection();
+  await loadNotes();
+}
+
 async function loadSession() {
   try {
+    const storedSort = window.localStorage.getItem(SORT_STORAGE_KEY);
+    if (storedSort === "created_desc" || storedSort === "created_asc" || storedSort === "name_asc" || storedSort === "name_desc") {
+      state.sort = storedSort;
+    }
     const payload = await api<UserResponse>("/api/auth/me", { method: "GET" });
     state.authenticated = true;
     state.username = payload.user.username;
@@ -803,6 +864,7 @@ async function verifyPublicEdit() {
 
   state.publicEditLoading = true;
   state.publicEditError = "";
+  state.publicEditSuccess = "";
   try {
     await api(`/api/public/edit/${encodeURIComponent(state.publicEditSlug)}/verify`, {
       method: "POST",
@@ -826,6 +888,7 @@ async function savePublicEditContent() {
 
   state.publicEditSaving = true;
   state.publicEditError = "";
+  state.publicEditSuccess = "";
   try {
     const payload = await api<{ success: boolean; filename: string; editCount: number }>(
       `/api/public/edit/${encodeURIComponent(state.publicEditSlug)}`,
@@ -837,6 +900,7 @@ async function savePublicEditContent() {
       }
     );
     state.publicEditFilename = payload.filename;
+    state.publicEditSuccess = "Changes were saved";
   } catch (error) {
     state.publicEditError = error instanceof Error ? error.message : "Could not save note";
   } finally {
@@ -926,10 +990,10 @@ async function loadAdminUsers() {
   const payload = await api<{ users: AdminUserSummary[] }>("/api/admin/users");
   state.adminUsers = payload.users;
   if (!state.adminSharesUsername) {
-    state.adminSharesUsername = state.username;
+    state.adminSharesUsername = "all";
   }
   if (!state.adminNotesUsername) {
-    state.adminNotesUsername = state.username;
+    state.adminNotesUsername = "all";
   }
 }
 
@@ -1000,6 +1064,12 @@ async function openAdminPanel(tab: AdminTab = state.adminTab) {
   state.adminLoading = true;
   try {
     await Promise.all([loadAdminUsers(), loadAdminShares(), loadAdminSettings()]);
+    if (tab === "shares" && !state.adminSharesUsername) {
+      state.adminSharesUsername = "all";
+    }
+    if (tab === "notes" && !state.adminNotesUsername) {
+      state.adminNotesUsername = "all";
+    }
     await loadAdminNotes(state.adminNotesUsername || "all");
   } finally {
     state.adminLoading = false;
@@ -1389,8 +1459,11 @@ onBeforeUnmount(() => {
             class="surface-soft min-h-[60vh] w-full resize-none rounded-3xl border p-5 text-sm leading-7 outline-none"
             :style="{ color: 'var(--vp-c-text-1)' }"
             spellcheck="false"
+            @input="state.publicEditSuccess = ''"
           />
-          <div class="mt-4 flex justify-end">
+          <div class="mt-4 flex items-center justify-between gap-4">
+            <p v-if="state.publicEditSuccess" class="text-sm" :style="{ color: 'var(--vp-c-green-2)' }">{{ state.publicEditSuccess }}</p>
+            <div class="ml-auto">
             <button
               class="rounded-2xl px-4 py-3 text-sm font-medium transition disabled:opacity-70"
               :style="{ background: 'var(--accent)', color: 'var(--vp-c-bg)' }"
@@ -1399,6 +1472,7 @@ onBeforeUnmount(() => {
             >
               {{ state.publicEditSaving ? "Saving..." : "Save changes" }}
             </button>
+            </div>
           </div>
         </div>
       </div>
@@ -1553,7 +1627,7 @@ onBeforeUnmount(() => {
             v-model="state.sort"
             class="surface-soft w-full rounded-2xl border px-3 py-3 text-sm outline-none transition"
             :style="{ color: 'var(--vp-c-text-1)' }"
-            @change="loadNotes"
+            @change="changeSort"
           >
             <option value="created_desc">Newest first</option>
             <option value="created_asc">Oldest first</option>
@@ -1745,7 +1819,14 @@ onBeforeUnmount(() => {
                         <div class="min-w-0">
                           <div class="flex flex-wrap items-center gap-2">
                             <p class="text-sm font-semibold">{{ user.username }}</p>
-                            <span class="rounded-full px-2 py-1 text-[11px] uppercase tracking-[0.2em]" :style="{ background: 'var(--vp-c-brand-soft)', color: 'var(--accent-strong)' }">
+                            <span
+                              class="rounded-full px-2 py-1 text-[11px] uppercase tracking-[0.2em]"
+                              :style="
+                                user.role === 'admin'
+                                  ? { background: 'var(--admin-role-soft)', color: 'var(--admin-role-text)' }
+                                  : { background: 'var(--vp-c-brand-soft)', color: 'var(--accent-strong)' }
+                              "
+                            >
                               {{ user.role }}
                             </span>
                             <span
@@ -1831,7 +1912,7 @@ onBeforeUnmount(() => {
                             </div>
                             <div class="stat-card rounded-2xl px-3 py-2">
                               <p class="uppercase tracking-[0.2em]">User agent</p>
-                              <p class="mt-1 text-[13px] break-words" :style="{ color: 'var(--vp-c-text-1)' }">{{ session.userAgent }}</p>
+                              <p class="mt-1 text-[13px] break-words" :style="{ color: 'var(--vp-c-text-1)' }">{{ formatUserAgentLabel(session.userAgent) }}</p>
                             </div>
                           </div>
                         </div>
@@ -1847,139 +1928,154 @@ onBeforeUnmount(() => {
               </div>
 
               <div v-else-if="state.adminTab === 'shares'" class="min-h-0 flex-1 overflow-y-auto pr-1">
-                <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <p class="text-xs uppercase tracking-[0.25em]" :style="{ color: 'var(--vp-c-text-3)' }">Active links</p>
-                    <h3 class="mt-1 text-lg font-semibold">{{ filteredAdminShares.length }} public links</h3>
-                  </div>
-                  <label class="block min-w-[220px]">
-                    <span class="mb-2 block text-xs uppercase tracking-[0.25em]" :style="{ color: 'var(--vp-c-text-3)' }">Selected user</span>
-                    <select
-                      v-model="state.adminSharesUsername"
-                      class="surface-soft w-full rounded-2xl border px-3 py-2 text-sm outline-none"
-                    >
-                      <option value="all">All users</option>
-                      <option v-for="user in state.adminUsers" :key="`shares-filter-${user.id}`" :value="user.username">
-                        {{ user.username }}
-                      </option>
-                    </select>
-                  </label>
-                </div>
-
-                <div v-if="filteredAdminShares.length === 0" class="surface-soft rounded-2xl border p-4 text-sm" :style="{ color: 'var(--vp-c-text-2)' }">
-                  No active public links.
-                </div>
-
-                <div v-for="share in filteredAdminShares" :key="share.id" class="surface-soft mb-3 rounded-2xl border p-4">
-                  <div class="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-                    <div class="min-w-0 flex-1">
-                      <div class="flex flex-wrap items-center gap-2">
-                        <p class="text-sm font-semibold">{{ share.filename }}</p>
-                        <span class="rounded-full px-2 py-1 text-[11px] uppercase tracking-[0.2em]" :style="{ background: 'var(--vp-c-brand-soft)', color: 'var(--accent-strong)' }">
-                          {{ share.username }}
-                        </span>
-                      </div>
-                      <div class="mt-3 space-y-2 text-sm">
-                        <a
-                          v-if="share.readUrlPath"
-                          class="block truncate underline"
-                          :style="{ color: 'var(--accent-strong)' }"
-                          :href="`${publicOrigin}${share.readUrlPath}`"
-                          target="_blank"
-                          rel="noopener"
-                        >
-                          Read: {{ publicOrigin }}{{ share.readUrlPath }}
-                        </a>
-                        <a
-                          v-if="share.editUrlPath"
-                          class="block truncate underline"
-                          :style="{ color: 'var(--accent-strong)' }"
-                          :href="`${publicOrigin}${share.editUrlPath}`"
-                          target="_blank"
-                          rel="noopener"
-                        >
-                          Edit: {{ publicOrigin }}{{ share.editUrlPath }}
-                        </a>
-                      </div>
-                      <div class="mt-3 grid gap-3 text-xs xl:grid-cols-5" :style="{ color: 'var(--vp-c-text-2)' }">
-                        <div class="stat-card rounded-2xl px-3 py-2">
-                          <p class="uppercase tracking-[0.2em]">State</p>
-                          <p class="mt-1 text-[13px] break-words" :style="{ color: 'var(--vp-c-text-1)' }">{{ share.state }}</p>
-                        </div>
-                        <div class="stat-card rounded-2xl px-3 py-2">
-                          <p class="uppercase tracking-[0.2em]">Views</p>
-                          <p class="mt-1 text-[13px]" :style="{ color: 'var(--vp-c-text-1)' }">{{ share.viewCount }}</p>
-                        </div>
-                        <div class="stat-card rounded-2xl px-3 py-2">
-                          <p class="uppercase tracking-[0.2em]">Edits</p>
-                          <p class="mt-1 text-[13px]" :style="{ color: 'var(--vp-c-text-1)' }">{{ share.editCount }}</p>
-                        </div>
-                        <div class="stat-card rounded-2xl px-3 py-2">
-                          <p class="uppercase tracking-[0.2em]">Password</p>
-                          <p class="mt-1 text-[13px]" :style="{ color: 'var(--vp-c-text-1)' }">{{ share.hasPassword ? "Protected" : "Open" }}</p>
-                        </div>
-                        <div class="stat-card rounded-2xl px-3 py-2">
-                          <p class="uppercase tracking-[0.2em]">Updated</p>
-                          <p class="mt-1 text-[13px] break-words" :style="{ color: 'var(--vp-c-text-1)' }">{{ formatDate(share.updatedAt) }}</p>
-                        </div>
-                      </div>
+                <div class="glass-panel min-h-0 rounded-3xl p-4">
+                  <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <p class="text-xs uppercase tracking-[0.25em]" :style="{ color: 'var(--vp-c-text-3)' }">Active links</p>
+                      <h3 class="mt-1 text-lg font-semibold">{{ filteredAdminShares.length }} public links</h3>
                     </div>
+                    <label class="block min-w-[220px]">
+                      <span class="mb-2 block text-xs uppercase tracking-[0.25em]" :style="{ color: 'var(--vp-c-text-3)' }">Selected user</span>
+                      <select
+                        v-model="state.adminSharesUsername"
+                        class="surface-soft w-full rounded-2xl border px-3 py-2 text-sm outline-none"
+                      >
+                        <option value="all">All users</option>
+                        <option v-for="user in state.adminUsers" :key="`shares-filter-${user.id}`" :value="user.username">
+                          {{ user.username }}
+                        </option>
+                      </select>
+                    </label>
+                  </div>
 
-                    <div class="flex flex-wrap gap-2">
-                      <button
-                        v-if="share.readEnabled"
-                        class="surface-soft admin-action action-button rounded-xl border px-3 py-2 text-sm transition"
-                        @click="adminChangeShareSlug(share, 'read')"
-                      >
-                        Change read link
-                      </button>
-                      <button
-                        v-if="share.editEnabled"
-                        class="surface-soft admin-action action-button rounded-xl border px-3 py-2 text-sm transition"
-                        @click="adminChangeShareSlug(share, 'edit')"
-                      >
-                        Change edit link
-                      </button>
-                      <button class="surface-soft admin-action action-button rounded-xl border px-3 py-2 text-sm transition" @click="adminSetSharePassword(share)">
-                        {{ share.hasPassword ? "Change password" : "Add password" }}
-                      </button>
-                      <button
-                        v-if="share.hasPassword"
-                        class="surface-soft admin-action action-button rounded-xl border px-3 py-2 text-sm transition"
-                        @click="adminRemoveSharePassword(share)"
-                      >
-                        Remove password
-                      </button>
-                      <button class="admin-action danger-button rounded-xl border px-3 py-2 text-sm transition" :style="{ color: 'var(--danger)', borderColor: 'var(--danger)' }" @click="adminDeleteShare(share)">
-                        Delete link
-                      </button>
+                  <div v-if="filteredAdminShares.length === 0" class="surface-soft rounded-2xl border p-4 text-sm" :style="{ color: 'var(--vp-c-text-2)' }">
+                    No active public links.
+                  </div>
+
+                  <div v-for="share in filteredAdminShares" :key="share.id" class="surface-soft mb-3 rounded-2xl border p-4">
+                    <div class="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+                      <div class="min-w-0 flex-1">
+                        <div class="flex flex-wrap items-center gap-2">
+                          <p class="text-sm font-semibold">{{ share.filename }}</p>
+                          <span
+                            class="rounded-full px-2 py-1 text-[11px] uppercase tracking-[0.2em]"
+                            :style="
+                              state.adminUsers.find((user) => user.username === share.username)?.role === 'admin'
+                                ? { background: 'var(--admin-role-soft)', color: 'var(--admin-role-text)' }
+                                : { background: 'var(--vp-c-brand-soft)', color: 'var(--accent-strong)' }
+                            "
+                          >
+                            {{ share.username }}
+                          </span>
+                        </div>
+                        <div class="mt-3 space-y-2 text-sm">
+                          <a
+                            v-if="share.readUrlPath"
+                            class="block truncate underline"
+                            :style="{ color: 'var(--accent-strong)' }"
+                            :href="`${publicOrigin}${share.readUrlPath}`"
+                            target="_blank"
+                            rel="noopener"
+                          >
+                            Read: {{ publicOrigin }}{{ share.readUrlPath }}
+                          </a>
+                          <a
+                            v-if="share.editUrlPath"
+                            class="block truncate underline"
+                            :style="{ color: 'var(--accent-strong)' }"
+                            :href="`${publicOrigin}${share.editUrlPath}`"
+                            target="_blank"
+                            rel="noopener"
+                          >
+                            Edit: {{ publicOrigin }}{{ share.editUrlPath }}
+                          </a>
+                        </div>
+                        <div class="mt-3 grid gap-3 text-xs xl:grid-cols-5" :style="{ color: 'var(--vp-c-text-2)' }">
+                          <div class="stat-card rounded-2xl px-3 py-2">
+                            <p class="uppercase tracking-[0.2em]">State</p>
+                            <p class="mt-1 text-[13px] break-words" :style="{ color: 'var(--vp-c-text-1)' }">{{ share.state }}</p>
+                          </div>
+                          <div class="stat-card rounded-2xl px-3 py-2">
+                            <p class="uppercase tracking-[0.2em]">Views</p>
+                            <p class="mt-1 text-[13px]" :style="{ color: 'var(--vp-c-text-1)' }">{{ share.viewCount }}</p>
+                          </div>
+                          <div class="stat-card rounded-2xl px-3 py-2">
+                            <p class="uppercase tracking-[0.2em]">Edits</p>
+                            <p class="mt-1 text-[13px]" :style="{ color: 'var(--vp-c-text-1)' }">{{ share.editCount }}</p>
+                          </div>
+                          <div class="stat-card rounded-2xl px-3 py-2">
+                            <p class="uppercase tracking-[0.2em]">Password</p>
+                            <p class="mt-1 text-[13px]" :style="{ color: 'var(--vp-c-text-1)' }">{{ share.hasPassword ? "Protected" : "Open" }}</p>
+                          </div>
+                          <div class="stat-card rounded-2xl px-3 py-2">
+                            <p class="uppercase tracking-[0.2em]">Updated</p>
+                            <p class="mt-1 text-[13px] break-words" :style="{ color: 'var(--vp-c-text-1)' }">{{ formatDate(share.updatedAt) }}</p>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div class="flex flex-wrap gap-2">
+                        <button
+                          class="surface-soft admin-action action-button rounded-xl border px-3 py-2 text-sm transition"
+                          @click="copyOwnShareLink(share)"
+                        >
+                          Copy link
+                        </button>
+                        <button
+                          v-if="share.readEnabled"
+                          class="surface-soft admin-action action-button rounded-xl border px-3 py-2 text-sm transition"
+                          @click="adminChangeShareSlug(share, 'read')"
+                        >
+                          Change read link
+                        </button>
+                        <button
+                          v-if="share.editEnabled"
+                          class="surface-soft admin-action action-button rounded-xl border px-3 py-2 text-sm transition"
+                          @click="adminChangeShareSlug(share, 'edit')"
+                        >
+                          Change edit link
+                        </button>
+                        <button class="surface-soft admin-action action-button rounded-xl border px-3 py-2 text-sm transition" @click="adminSetSharePassword(share)">
+                          {{ share.hasPassword ? "Change password" : "Add password" }}
+                        </button>
+                        <button
+                          v-if="share.hasPassword"
+                          class="surface-soft admin-action action-button rounded-xl border px-3 py-2 text-sm transition"
+                          @click="adminRemoveSharePassword(share)"
+                        >
+                          Remove password
+                        </button>
+                        <button class="admin-action danger-button rounded-xl border px-3 py-2 text-sm transition" :style="{ color: 'var(--danger)', borderColor: 'var(--danger)' }" @click="adminDeleteShare(share)">
+                          Delete link
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>
               </div>
 
-              <div v-else-if="state.adminTab === 'notes'" class="flex min-h-0 flex-1 flex-col">
-                <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-                  <div>
-                    <p class="text-xs uppercase tracking-[0.25em]" :style="{ color: 'var(--vp-c-text-3)' }">Recent notes</p>
-                    <h3 class="mt-1 text-lg font-semibold">User notes overview</h3>
+              <div v-else-if="state.adminTab === 'notes'" class="min-h-0 flex-1 overflow-y-auto pr-1">
+                <div class="glass-panel min-h-0 rounded-3xl p-4">
+                  <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <p class="text-xs uppercase tracking-[0.25em]" :style="{ color: 'var(--vp-c-text-3)' }">Recent notes</p>
+                      <h3 class="mt-1 text-lg font-semibold">User notes overview</h3>
+                    </div>
+                    <label class="block min-w-[220px]">
+                      <span class="mb-2 block text-xs uppercase tracking-[0.25em]" :style="{ color: 'var(--vp-c-text-3)' }">Selected user</span>
+                      <select
+                        v-model="state.adminNotesUsername"
+                        class="surface-soft w-full rounded-2xl border px-3 py-2 text-sm outline-none"
+                        @change="loadAdminNotes(state.adminNotesUsername)"
+                      >
+                        <option value="all">All users</option>
+                        <option v-for="user in state.adminUsers" :key="`admin-notes-${user.id}`" :value="user.username">
+                          {{ user.username }}
+                        </option>
+                      </select>
+                    </label>
                   </div>
-                  <label class="block min-w-[220px]">
-                    <span class="mb-2 block text-xs uppercase tracking-[0.25em]" :style="{ color: 'var(--vp-c-text-3)' }">Selected user</span>
-                    <select
-                      v-model="state.adminNotesUsername"
-                      class="surface-soft w-full rounded-2xl border px-3 py-3 text-sm outline-none"
-                      @change="loadAdminNotes(state.adminNotesUsername)"
-                    >
-                      <option value="all">All users</option>
-                      <option v-for="user in state.adminUsers" :key="`admin-notes-${user.id}`" :value="user.username">
-                        {{ user.username }}
-                      </option>
-                    </select>
-                  </label>
-                </div>
 
-                <div class="min-h-0 flex-1 overflow-y-auto pr-1">
                   <div v-if="state.adminNotes.length === 0" class="surface-soft rounded-2xl border p-4 text-sm" :style="{ color: 'var(--vp-c-text-2)' }">
                     No notes for this user.
                   </div>
@@ -2174,7 +2270,7 @@ onBeforeUnmount(() => {
                       </div>
                       <div class="stat-card rounded-2xl px-3 py-2">
                         <p class="uppercase tracking-[0.2em]">User agent</p>
-                        <p class="mt-1 text-[13px] break-words" :style="{ color: 'var(--vp-c-text-1)' }">{{ session.userAgent }}</p>
+                        <p class="mt-1 text-[13px] break-words" :style="{ color: 'var(--vp-c-text-1)' }">{{ formatUserAgentLabel(session.userAgent) }}</p>
                       </div>
                     </div>
                   </div>
