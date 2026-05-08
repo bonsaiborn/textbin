@@ -257,7 +257,7 @@ npm install
 Start frontend and backend development servers:
 
 ```bash
-npm run dev
+docker compose up --build
 ```
 
 The frontend runs through Vite and proxies ```/api/*``` to the backend.
