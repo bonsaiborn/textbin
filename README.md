@@ -19,7 +19,6 @@ It is built with Vue 3, TypeScript, Tailwind CSS, Fastify, and SQLite. Note cont
 ### Login page
 <details>
 <img src="docs/screenshots/desktop-login.png" alt="desktop-login">
-<img src="docs/screenshots/desktop-login-light.png" alt="desktop-login-light">
 </details>
 
 ### Dashboard
