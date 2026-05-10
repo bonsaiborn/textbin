@@ -166,7 +166,7 @@ sudo chmod -R 700 data
 ```yaml
 services:
   textbin:
-    image: bonsaiborn/textbin:v6
+    image: bonsaiborn/textbin:v7
     container_name: textbin
     ports:
       - "127.0.0.1:3001:3000"

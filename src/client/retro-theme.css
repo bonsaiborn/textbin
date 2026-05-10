@@ -324,15 +324,55 @@ body {
   background: var(--retro-danger-bg) !important;
 }
 
+.retro-app button:disabled,
+.retro-app .action-button:disabled,
+.retro-app .admin-action:disabled,
+.retro-app .surface-soft.action-button:disabled {
+  background: #c3c3c3 !important;
+  box-shadow:
+    inset -2px -2px 0 0 #262626,
+    inset 2px 2px 0 0 #f0f0f0,
+    inset -4px -4px 0 0 #7e7e7e,
+    inset 4px 4px 0 0 #d6d6d6 !important;
+  filter: none !important;
+  transform: none !important;
+  transition: none !important;
+}
+
+.retro-app .danger-button:disabled,
+.retro-app .surface-soft.danger-button:disabled {
+  background: var(--retro-danger-bg) !important;
+  box-shadow:
+    inset -2px -2px 0 0 #5c3131,
+    inset 2px 2px 0 0 var(--retro-danger-face),
+    inset -4px -4px 0 0 #8f6969 !important;
+  filter: none !important;
+  transform: none !important;
+  transition: none !important;
+}
+
 .retro-app button:disabled:hover,
 .retro-app .action-button:disabled:hover,
 .retro-app .admin-action:disabled:hover,
 .retro-app .surface-soft.action-button:disabled:hover,
 .retro-app .danger-button:disabled:hover {
-  background: inherit !important;
-  box-shadow: inherit !important;
+  background: #c3c3c3 !important;
+  box-shadow:
+    inset -2px -2px 0 0 #262626,
+    inset 2px 2px 0 0 #f0f0f0,
+    inset -4px -4px 0 0 #7e7e7e,
+    inset 4px 4px 0 0 #d6d6d6 !important;
   filter: none !important;
   transform: none !important;
+}
+
+.retro-app .danger-button:disabled:hover,
+.retro-app .surface-soft.danger-button:disabled:hover {
+  background: var(--retro-danger-bg) !important;
+  box-shadow:
+    inset -2px -2px 0 0 #5c3131,
+    inset 2px 2px 0 0 var(--retro-danger-face),
+    inset -4px -4px 0 0 #8f6969 !important;
 }
 
 .retro-app button:active,
@@ -402,6 +442,20 @@ body {
     inset 4px 4px 0 0 #7e7e7e,
     inset -4px -4px 0 0 #d6d6d6 !important;
   transform: translate(1px, 1px);
+}
+
+.retro-app button.surface-note-active:hover,
+.retro-app .surface-soft.surface-note-active:hover,
+.retro-app .action-button.surface-note-active:hover {
+  background: #c3c3c3 !important;
+  border-color: var(--retro-active-border) !important;
+  box-shadow:
+    inset 2px 2px 0 0 #262626,
+    inset -2px -2px 0 0 #f0f0f0,
+    inset 4px 4px 0 0 #7e7e7e,
+    inset -4px -4px 0 0 #d6d6d6 !important;
+  filter: none !important;
+  transform: translate(1px, 1px) !important;
 }
 
 .retro-app .menu-pop {
