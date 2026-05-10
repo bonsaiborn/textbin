@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 
 type SortMode = "created_desc" | "created_asc" | "name_asc" | "name_desc";
 type ThemeMode = "light" | "dark";
 type ThemeSetting = ThemeMode | "system";
 type UserRole = "admin" | "user";
 type MainView = "editor" | "admin" | "account";
-type AdminTab = "users" | "shares" | "notes" | "settings";
+type AdminTab = "users" | "sessions" | "shares" | "notes" | "settings";
 type AccountTab = "sessions" | "shares" | "password";
 type UserFilter = "all" | UserRole;
 type ShareState = "read" | "edit";
@@ -77,6 +77,11 @@ interface SessionSummary {
   userAgent: string;
 }
 
+interface AdminSessionSummary extends SessionSummary {
+  username: string;
+  userId: number;
+}
+
 const state = reactive({
   ready: false,
   authenticated: false,
@@ -135,6 +140,9 @@ const state = reactive({
   adminSharesUsername: "",
   adminNotes: [] as NoteMeta[],
   adminNotesUsername: "",
+  adminSessionsLoading: false,
+  adminSessionsUsername: "all",
+  adminSessions: [] as AdminSessionSummary[],
   adminSettingsSaving: false,
   adminCreateUsername: "",
   adminCreatePassword: "",
@@ -167,6 +175,7 @@ const state = reactive({
 });
 
 let autosaveTimer: number | undefined;
+const editorTextarea = ref<HTMLTextAreaElement | null>(null);
 
 const selectedNote = computed(() =>
   state.notes.find((note) => note.filename === state.selectedFilename)
@@ -176,7 +185,7 @@ const hasSelection = computed(() => Boolean(state.selectedFilename) || state.isC
 const canOperateOnSavedNote = computed(() => Boolean(state.selectedFilename) && !state.isCreatingNew);
 const byteCount = computed(() => new TextEncoder().encode(state.editorContent).length);
 const isAdmin = computed(() => state.role === "admin");
-const adminTabs: AdminTab[] = ["users", "shares", "notes", "settings"];
+const adminTabs: AdminTab[] = ["users", "sessions", "shares", "notes", "settings"];
 const accountTabs: AccountTab[] = ["sessions", "shares", "password"];
 const publicOrigin = typeof window !== "undefined" ? window.location.origin : "";
 const filteredAdminUsers = computed(() =>
@@ -277,7 +286,160 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 function formatDate(value: string): string {
-  return new Date(value).toLocaleString();
+  const date = new Date(value);
+  const day = String(date.getDate()).padStart(2, "0");
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const year = date.getFullYear();
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  const seconds = String(date.getSeconds()).padStart(2, "0");
+  return `${day}-${month}-${year} ${hours}:${minutes}:${seconds}`;
+}
+
+function updateDocumentTitle() {
+  if (state.publicShareSlug || state.publicEditSlug) {
+    return;
+  }
+
+  if (!state.authenticated) {
+    document.title = "TextBin";
+    return;
+  }
+
+  if (state.currentView === "admin") {
+    document.title = "Admin Panel - TextBin";
+    return;
+  }
+
+  if (state.currentView === "account") {
+    document.title = "Account Settings - TextBin";
+    return;
+  }
+
+  if (state.isCreatingNew && !state.selectedFilename) {
+    document.title = "New Note - TextBin";
+    return;
+  }
+
+  if (state.selectedFilename) {
+    document.title = `${state.selectedFilename.replace(/\.txt$/i, "")} - TextBin`;
+    return;
+  }
+
+  document.title = "TextBin";
+}
+
+function getRoleBadgeStyle(role?: UserRole) {
+  if (role === "admin") {
+    return { background: "var(--admin-role-soft)", color: "var(--admin-role-text)" };
+  }
+
+  return { background: "var(--user-role-soft)", color: "var(--user-role-text)" };
+}
+
+function getBlockedBadgeStyle() {
+  return { background: "var(--blocked-role-soft)", color: "var(--blocked-role-text)" };
+}
+
+function clampEditorFontSize(value: number): number {
+  return Math.min(28, Math.max(10, value));
+}
+
+function adjustEditorFontSize(delta: number) {
+  state.editorFontSize = clampEditorFontSize(state.editorFontSize + delta);
+}
+
+function isEditorInteractionContext(target: EventTarget | null): boolean {
+  if (state.currentView !== "editor" || !editorTextarea.value) {
+    return false;
+  }
+
+  const isInsideTarget = target instanceof Node && editorTextarea.value.contains(target);
+  const isHovered = editorTextarea.value.matches(":hover");
+  const isFocused = document.activeElement === editorTextarea.value;
+
+  return isInsideTarget || isHovered || isFocused;
+}
+
+function handleEditorWheel(event: WheelEvent) {
+  if (!event.ctrlKey) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  const delta = event.deltaY < 0 ? 1 : -1;
+  adjustEditorFontSize(delta);
+}
+
+function handleGlobalEditorWheel(event: WheelEvent) {
+  if (!event.ctrlKey) {
+    return;
+  }
+
+  if (!isEditorInteractionContext(event.target)) {
+    return;
+  }
+
+  handleEditorWheel(event);
+}
+
+function handleLegacyEditorWheel(event: Event) {
+  const legacyEvent = event as WheelEvent & { wheelDelta?: number };
+  if (!legacyEvent.ctrlKey) {
+    return;
+  }
+
+  if (!isEditorInteractionContext(legacyEvent.target)) {
+    return;
+  }
+
+  legacyEvent.preventDefault();
+  legacyEvent.stopPropagation();
+  const delta = (legacyEvent.wheelDelta ?? 0) > 0 ? 1 : -1;
+  adjustEditorFontSize(delta);
+}
+
+function handleAltEditorWheel(event: WheelEvent) {
+  if (!event.altKey) {
+    return;
+  }
+
+  if (!isEditorInteractionContext(event.target)) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+  const delta = event.deltaY < 0 ? 1 : -1;
+  adjustEditorFontSize(delta);
+}
+
+function handleEditorKeyZoom(event: KeyboardEvent) {
+  if (!isEditorInteractionContext(event.target)) {
+    return;
+  }
+
+  if (!(event.ctrlKey || event.metaKey)) {
+    return;
+  }
+
+  if (event.key === "+" || event.key === "=") {
+    event.preventDefault();
+    adjustEditorFontSize(1);
+    return;
+  }
+
+  if (event.key === "-" || event.key === "_") {
+    event.preventDefault();
+    adjustEditorFontSize(-1);
+    return;
+  }
+
+  if (event.key === "0") {
+    event.preventDefault();
+    state.editorFontSize = 14;
+  }
 }
 
 function getCookieValue(name: string): string {
@@ -296,7 +458,7 @@ function formatUserAgentLabel(userAgent: string): string {
 
   let browser = "Unknown browser";
   if (normalized.includes("edg/")) {
-    browser = "Microsoft Edge";
+    browser = "MS Edge";
   } else if (normalized.includes("opr/") || normalized.includes("opera/")) {
     browser = "Opera";
   } else if (normalized.includes("firefox/")) {
@@ -309,7 +471,19 @@ function formatUserAgentLabel(userAgent: string): string {
 
   let os = "Unknown OS";
   if (normalized.includes("windows")) {
-    os = "Windows";
+    const match = normalized.match(/windows nt (\d+\.\d+)/);
+    const version = match?.[1];
+    if (version === "6.1") {
+      os = "Win 7";
+    } else if (version === "6.2") {
+      os = "Win 8";
+    } else if (version === "6.3") {
+      os = "Win 8.1";
+    } else if (version === "10.0") {
+      os = "Win 10/11";
+    } else {
+      os = "Win";
+    }
   } else if (normalized.includes("android")) {
     os = "Android";
   } else if (normalized.includes("iphone") || normalized.includes("ipad") || normalized.includes("ios")) {
@@ -404,6 +578,7 @@ function resetEditorState() {
 
 function closeCurrentNote() {
   resetEditorState();
+  updateDocumentTitle();
 }
 
 function clearAuthState() {
@@ -418,6 +593,8 @@ function clearAuthState() {
   state.adminNotes = [];
   state.adminNotesUsername = "";
   state.adminSharesUsername = "";
+  state.adminSessions = [];
+  state.adminSessionsUsername = "all";
   state.meSessions = [];
   state.accountPasswordCurrent = "";
   state.accountPasswordNext = "";
@@ -430,12 +607,8 @@ function clearAuthState() {
 async function loadInstanceSettings() {
   const payload = await api<{ settings: InstanceSettings }>("/api/settings");
   state.settings = payload.settings;
-  const storedTheme = window.localStorage.getItem("textbin-theme");
-  if (storedTheme === "light" || storedTheme === "dark") {
-    applyTheme(storedTheme);
-  } else {
-    applyTheme(resolveThemeSetting(payload.settings.defaultTheme));
-  }
+  state.settings.defaultTheme = "light";
+  applyTheme("light");
 }
 
 async function loadUserShares() {
@@ -551,9 +724,9 @@ async function loadSession() {
     state.authenticated = true;
     state.username = payload.user.username;
     state.role = payload.user.role;
-    document.title = "TextBin";
     history.replaceState({}, "", "/dashboard");
     await Promise.all([loadInstanceSettings(), loadNotes(), loadUserShares()]);
+    updateDocumentTitle();
   } catch {
     clearAuthState();
     history.replaceState({}, "", "/login");
@@ -578,6 +751,7 @@ async function login() {
     state.loginPassword = "";
     history.replaceState({}, "", "/dashboard");
     await Promise.all([loadInstanceSettings(), loadNotes(), loadUserShares()]);
+    updateDocumentTitle();
   } catch (error) {
     state.loginError = error instanceof Error ? error.message : "Invalid username or password";
   }
@@ -587,6 +761,7 @@ async function logout() {
   await api("/api/auth/logout", { method: "POST" });
   clearAuthState();
   history.replaceState({}, "", "/login");
+  updateDocumentTitle();
 }
 
 async function loadShareForFilename(filename: string) {
@@ -628,7 +803,7 @@ async function openNote(filename: string) {
   const payload = await api<{ filename: string; content: string }>(`/api/notes/${encodeURIComponent(filename)}`);
   state.currentView = "editor";
   state.selectedFilename = payload.filename;
-  document.title = `${payload.filename.replace(/\.txt$/i, "")} - TextBin`;
+  updateDocumentTitle();
   state.editorTitle = payload.filename.replace(/\.txt$/i, "");
   state.editorContent = payload.content;
   state.isCreatingNew = false;
@@ -641,7 +816,6 @@ async function openNote(filename: string) {
 function createNewNote() {
   closeContextMenu();
   state.currentView = "editor";
-  document.title = "New Note - TextBin";
   state.selectedFilename = "";
   state.editorTitle = "";
   state.editorContent = "";
@@ -649,6 +823,7 @@ function createNewNote() {
   state.isDirty = false;
   state.feedback = "";
   clearShareState();
+  updateDocumentTitle();
 }
 
 async function saveNote() {
@@ -796,6 +971,62 @@ async function copyOwnShareLink(share: ShareSummary) {
   } catch {
     window.prompt("Copy this link", url);
   }
+}
+
+async function updateOwnShare(share: ShareSummary, updates: {
+  customSlug?: string;
+  passwordEnabled?: boolean;
+  password?: string;
+}) {
+  const payload = await api<{ share: ShareSummary | null }>(`/api/shares/${encodeURIComponent(share.filename)}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      readEnabled: share.state === "read",
+      editEnabled: share.state === "edit",
+      readCustomSlug: share.state === "read" ? updates.customSlug : undefined,
+      editCustomSlug: share.state === "edit" ? updates.customSlug : undefined,
+      passwordEnabled: updates.passwordEnabled ?? share.hasPassword,
+      password: updates.password,
+      expiresAt: share.expiresAt ?? undefined
+    })
+  });
+
+  await loadUserShares();
+
+  if (state.selectedFilename === share.filename && payload.share) {
+    await loadShareForFilename(share.filename);
+  }
+
+  return payload.share;
+}
+
+async function changeOwnShareSlug(share: ShareSummary) {
+  const currentSlug = share.state === "edit" ? share.editSlug : share.readSlug;
+  const customSlug = window.prompt(`New ${share.state} share slug`, currentSlug ?? "");
+  if (!customSlug) {
+    return;
+  }
+
+  await updateOwnShare(share, { customSlug });
+  state.feedback = `${share.state} share slug updated`;
+}
+
+async function setOwnSharePassword(share: ShareSummary) {
+  const password = window.prompt(`Password for ${share.filename}`);
+  if (!password) {
+    return;
+  }
+
+  await updateOwnShare(share, {
+    passwordEnabled: true,
+    password
+  });
+  state.feedback = "Share password updated";
+}
+
+async function removeOwnSharePassword(share: ShareSummary) {
+  await updateOwnShare(share, { passwordEnabled: false });
+  state.feedback = "Share password removed";
 }
 
 async function renameFromMenu(filename: string) {
@@ -979,7 +1210,7 @@ function applyTheme(theme: ThemeMode) {
 }
 
 function toggleTheme() {
-  applyTheme(state.theme === "dark" ? "light" : "dark");
+  applyTheme("light");
 }
 
 function onBackgroundClick() {
@@ -1048,9 +1279,46 @@ async function loadAdminUserSessions(userId: number, username: string) {
   }
 }
 
+async function loadAdminSessions(username: string = state.adminSessionsUsername || "all") {
+  state.adminSessionsLoading = true;
+  state.adminSessionsUsername = username;
+  try {
+    if (username === "all") {
+      const results = await Promise.all(
+        state.adminUsers.map(async (user) => {
+          const payload = await api<{ user: { username: string }; sessions: SessionSummary[] }>(`/api/admin/users/${user.id}/sessions`);
+          return payload.sessions.map((session) => ({
+            ...session,
+            username: user.username,
+            userId: user.id
+          }));
+        })
+      );
+      state.adminSessions = results.flat().sort((left, right) => right.lastUsedAt.localeCompare(left.lastUsedAt));
+      return;
+    }
+
+    const targetUser = state.adminUsers.find((user) => user.username === username);
+    if (!targetUser) {
+      state.adminSessions = [];
+      return;
+    }
+
+    const payload = await api<{ user: { username: string }; sessions: SessionSummary[] }>(`/api/admin/users/${targetUser.id}/sessions`);
+    state.adminSessions = payload.sessions.map((session) => ({
+      ...session,
+      username: targetUser.username,
+      userId: targetUser.id
+    }));
+  } finally {
+    state.adminSessionsLoading = false;
+  }
+}
+
 async function openAccountSettings(tab: AccountTab = state.accountTab) {
   state.currentView = "account";
   state.accountTab = tab;
+  updateDocumentTitle();
   await Promise.all([loadUserShares(), loadMySessions()]);
 }
 
@@ -1061,16 +1329,25 @@ async function openAdminPanel(tab: AdminTab = state.adminTab) {
 
   state.currentView = "admin";
   state.adminTab = tab;
+  updateDocumentTitle();
   state.adminLoading = true;
   try {
     await Promise.all([loadAdminUsers(), loadAdminShares(), loadAdminSettings()]);
+    if (tab === "sessions" && !state.adminSessionsUsername) {
+      state.adminSessionsUsername = "all";
+    }
     if (tab === "shares" && !state.adminSharesUsername) {
       state.adminSharesUsername = "all";
     }
     if (tab === "notes" && !state.adminNotesUsername) {
       state.adminNotesUsername = "all";
     }
-    await loadAdminNotes(state.adminNotesUsername || "all");
+    if (tab === "notes") {
+      await loadAdminNotes(state.adminNotesUsername || "all");
+    }
+    if (tab === "sessions") {
+      await loadAdminSessions(state.adminSessionsUsername || "all");
+    }
   } finally {
     state.adminLoading = false;
   }
@@ -1206,10 +1483,7 @@ async function adminRevokeSession(session: SessionSummary) {
   await api(`/api/admin/sessions/${session.id}`, {
     method: "DELETE"
   });
-  const targetUser = state.adminUsers.find((user) => user.username === state.adminUserSessionsTarget);
-  if (targetUser) {
-    await loadAdminUserSessions(targetUser.id, targetUser.username);
-  }
+  await loadAdminSessions(state.adminSessionsUsername || "all");
   state.feedback = "Admin session revoked";
 }
 
@@ -1320,12 +1594,7 @@ async function saveAdminSettings() {
 }
 
 onMounted(() => {
-  const storedTheme = window.localStorage.getItem("textbin-theme");
-  if (storedTheme === "light" || storedTheme === "dark") {
-    applyTheme(storedTheme);
-  } else {
-    applyTheme("dark");
-  }
+  applyTheme("light");
 
   const shareMatch = window.location.pathname.match(/^\/s\/([^/]+)$/);
   if (shareMatch) {
@@ -1351,18 +1620,43 @@ onMounted(() => {
 
   void loadSession();
   window.addEventListener("click", onBackgroundClick);
+  window.addEventListener("wheel", handleGlobalEditorWheel as EventListener, { passive: false, capture: true });
+  window.addEventListener("wheel", handleAltEditorWheel as EventListener, { passive: false, capture: true });
+  document.addEventListener("wheel", handleGlobalEditorWheel as EventListener, { passive: false, capture: true });
+  document.addEventListener("wheel", handleAltEditorWheel as EventListener, { passive: false, capture: true });
+  window.addEventListener("mousewheel", handleLegacyEditorWheel as EventListener, { passive: false, capture: true });
+  document.addEventListener("mousewheel", handleLegacyEditorWheel as EventListener, { passive: false, capture: true });
+  window.addEventListener("keydown", handleEditorKeyZoom as EventListener, true);
+  document.addEventListener("keydown", handleEditorKeyZoom as EventListener, true);
 });
+
+watch(
+  () => [state.currentView, state.selectedFilename, state.isCreatingNew] as const,
+  async () => {
+    await nextTick();
+    state.settings.defaultTheme = "light";
+    updateDocumentTitle();
+  }
+);
 
 onBeforeUnmount(() => {
   if (autosaveTimer) {
     window.clearTimeout(autosaveTimer);
   }
+  window.removeEventListener("wheel", handleGlobalEditorWheel as EventListener, true);
+  window.removeEventListener("wheel", handleAltEditorWheel as EventListener, true);
+  document.removeEventListener("wheel", handleGlobalEditorWheel as EventListener, true);
+  document.removeEventListener("wheel", handleAltEditorWheel as EventListener, true);
+  window.removeEventListener("mousewheel", handleLegacyEditorWheel as EventListener, true);
+  document.removeEventListener("mousewheel", handleLegacyEditorWheel as EventListener, true);
+  window.removeEventListener("keydown", handleEditorKeyZoom as EventListener, true);
+  document.removeEventListener("keydown", handleEditorKeyZoom as EventListener, true);
   window.removeEventListener("click", onBackgroundClick);
 });
 </script>
 
 <template>
-  <div class="min-h-screen w-full overflow-x-hidden px-4 py-6 sm:px-6 lg:px-8" :style="{ color: 'var(--vp-c-text-1)' }">
+  <div class="retro-app min-h-screen w-full overflow-x-hidden px-2 py-3 sm:px-4 sm:py-4 lg:px-5 lg:py-5" :style="{ color: 'var(--vp-c-text-1)' }">
     <div
       v-if="!state.ready"
       class="flex min-h-[calc(100vh-3rem)] items-center justify-center text-sm"
@@ -1371,10 +1665,10 @@ onBeforeUnmount(() => {
       Loading TextBin...
     </div>
 
-    <div v-else-if="isPublicShareView" class="mx-auto flex min-h-[calc(100vh-3rem)] max-w-5xl items-center justify-center">
-      <div class="glass-panel w-full rounded-3xl p-6 sm:p-8">
+    <div v-else-if="isPublicShareView" class="retro-login-shell mx-auto flex min-h-[calc(100vh-3rem)] max-w-5xl items-center justify-center">
+      <div class="glass-panel retro-window retro-public-window w-full rounded-3xl p-6 sm:p-8" data-window-title="PUBLIC READ LINK">
         <div class="mb-6">
-          <p class="text-xs uppercase tracking-[0.35em]" :style="{ color: 'var(--accent)' }">Shared note</p>
+          <p class="retro-hero-label text-xs uppercase tracking-[0.35em]" :style="{ color: 'var(--accent)' }">Shared note</p>
           <h1 class="mt-3 text-3xl font-semibold tracking-tight">
             {{ state.publicShareFilename || "Public text" }}
           </h1>
@@ -1410,7 +1704,7 @@ onBeforeUnmount(() => {
           <textarea
             :value="state.publicShareContent"
             readonly
-            class="surface-soft min-h-[60vh] w-full resize-none rounded-3xl border p-5 text-sm leading-7 outline-none"
+            class="surface-soft retro-editor-area min-h-[60vh] w-full resize-none rounded-3xl border p-5 text-sm leading-7 outline-none"
             :style="{ color: 'var(--vp-c-text-1)' }"
             spellcheck="false"
           />
@@ -1418,10 +1712,10 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div v-else-if="isPublicEditView" class="mx-auto flex min-h-[calc(100vh-3rem)] max-w-5xl items-center justify-center">
-      <div class="glass-panel w-full rounded-3xl p-6 sm:p-8">
+    <div v-else-if="isPublicEditView" class="retro-login-shell mx-auto flex min-h-[calc(100vh-3rem)] max-w-5xl items-center justify-center">
+      <div class="glass-panel retro-window retro-public-window w-full rounded-3xl p-6 sm:p-8" data-window-title="PUBLIC EDIT LINK">
         <div class="mb-6">
-          <p class="text-xs uppercase tracking-[0.35em]" :style="{ color: 'var(--accent)' }">Editable note</p>
+          <p class="retro-hero-label text-xs uppercase tracking-[0.35em]" :style="{ color: 'var(--accent)' }">Editable note</p>
           <h1 class="mt-3 text-3xl font-semibold tracking-tight">
             {{ state.publicEditFilename || "Editable text" }}
           </h1>
@@ -1456,13 +1750,13 @@ onBeforeUnmount(() => {
           <p v-if="state.publicEditError" class="mb-4 text-sm" :style="{ color: 'var(--danger)' }">{{ state.publicEditError }}</p>
           <textarea
             v-model="state.publicEditContent"
-            class="surface-soft min-h-[60vh] w-full resize-none rounded-3xl border p-5 text-sm leading-7 outline-none"
+            class="surface-soft retro-editor-area min-h-[60vh] w-full resize-none rounded-3xl border p-5 text-sm leading-7 outline-none"
             :style="{ color: 'var(--vp-c-text-1)' }"
             spellcheck="false"
             @input="state.publicEditSuccess = ''"
           />
           <div class="mt-4 flex items-center justify-between gap-4">
-            <p v-if="state.publicEditSuccess" class="text-sm" :style="{ color: 'var(--vp-c-green-2)' }">{{ state.publicEditSuccess }}</p>
+            <p v-if="state.publicEditSuccess" class="retro-success-text text-sm" :style="{ color: 'var(--vp-c-green-2)' }">{{ state.publicEditSuccess }}</p>
             <div class="ml-auto">
             <button
               class="rounded-2xl px-4 py-3 text-sm font-medium transition disabled:opacity-70"
@@ -1480,11 +1774,11 @@ onBeforeUnmount(() => {
 
     <div
       v-else-if="!state.authenticated"
-      class="mx-auto flex min-h-[calc(100vh-3rem)] max-w-5xl items-center justify-center"
+      class="retro-login-shell mx-auto flex min-h-[calc(100vh-3rem)] max-w-5xl items-center justify-center"
     >
-      <div class="glass-panel w-full max-w-md rounded-3xl p-8">
+      <div class="glass-panel retro-window retro-login-window w-full max-w-md rounded-3xl p-8" data-window-title="TEXTBIN LOGIN">
         <div class="mb-8">
-          <p class="text-xs uppercase tracking-[0.35em]" :style="{ color: 'var(--accent)' }">Private Text Vault</p>
+          <p class="retro-hero-label text-xs uppercase tracking-[0.35em]" :style="{ color: 'var(--accent)' }">Private Text Vault</p>
           <h1 class="mt-3 text-4xl font-semibold tracking-tight">TextBin</h1>
           <p class="mt-3 text-sm leading-6" :style="{ color: 'var(--vp-c-text-2)' }">
             Sign in to access your plain text workspace. Plain text only, private by default.
@@ -1527,11 +1821,11 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div v-else class="mx-auto flex min-h-[calc(100vh-3rem)] max-w-7xl min-w-0 flex-col gap-4 lg:h-[calc(100vh-3rem)] lg:min-h-0 lg:max-w-[1680px] lg:flex-row">
-      <div class="glass-panel flex w-full min-w-0 flex-col gap-3 rounded-3xl p-4 lg:hidden">
+    <div v-else class="retro-shell mx-auto flex min-h-[calc(100vh-3rem)] max-w-7xl min-w-0 flex-col gap-3 lg:h-[calc(100vh-3rem)] lg:min-h-0 lg:max-w-[1680px] lg:flex-row">
+      <div class="glass-panel retro-window retro-mobile-panel flex w-full min-w-0 flex-col gap-3 rounded-3xl p-4 lg:hidden" data-window-title="TEXTBIN SESSION">
         <div>
           <p class="text-xs uppercase tracking-[0.25em]" :style="{ color: 'var(--vp-c-text-3)' }">Signed in</p>
-          <p class="mt-1 text-sm font-medium">{{ state.username }}</p>
+          <p class="mt-1 text-sm font-semibold">{{ state.username }}</p>
         </div>
         <button
           v-if="isAdmin"
@@ -1552,14 +1846,6 @@ onBeforeUnmount(() => {
         </button>
         <div class="flex w-full min-w-0 gap-2">
           <button
-            class="action-button min-w-0 flex-1 rounded-xl border px-3 py-2 text-sm transition"
-            :class="state.theme === 'dark' ? 'surface-note-active' : 'surface-soft'"
-            :style="{ color: 'var(--vp-c-text-1)' }"
-            @click="toggleTheme"
-          >
-            Theme
-          </button>
-          <button
             class="surface-soft action-button danger-button min-w-0 flex-1 rounded-xl border px-3 py-2 text-sm transition"
             :style="{ color: 'var(--vp-c-text-1)' }"
             @click="logout"
@@ -1569,22 +1855,14 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <aside class="glass-panel hidden w-full max-w-[320px] flex-col overflow-hidden rounded-3xl p-4 lg:flex lg:h-full lg:max-w-[360px]">
+      <aside class="glass-panel retro-window retro-sidebar hidden w-full max-w-[320px] flex-col overflow-hidden rounded-3xl p-4 lg:flex lg:h-full lg:max-w-[360px]" data-window-title="NAVIGATOR">
         <div class="mb-4 flex items-center justify-between gap-3">
           <div>
             <p class="text-xs uppercase tracking-[0.25em]" :style="{ color: 'var(--vp-c-text-3)' }">Signed in</p>
-            <p class="mt-1 text-sm font-medium">{{ state.username }}</p>
+            <p class="mt-1 text-sm font-semibold">{{ state.username }}</p>
             <p class="mt-1 text-xs uppercase tracking-[0.2em]" :style="{ color: 'var(--vp-c-text-3)' }">{{ state.role }}</p>
           </div>
           <div class="flex items-center gap-2">
-            <button
-              class="action-button rounded-xl border px-3 py-2 text-sm transition"
-              :class="state.theme === 'dark' ? 'surface-note-active' : 'surface-soft'"
-              :style="{ color: 'var(--vp-c-text-1)' }"
-              @click="toggleTheme"
-            >
-              Theme
-            </button>
             <button
               class="surface-soft action-button danger-button rounded-xl border px-3 py-2 text-sm transition"
               :style="{ color: 'var(--vp-c-text-1)' }"
@@ -1644,18 +1922,23 @@ onBeforeUnmount(() => {
             v-for="note in state.notes"
             :key="note.filename"
             data-note-item
-            class="surface-note relative mb-2 flex w-full items-center gap-3 rounded-2xl border px-3 py-3 text-left transition"
-            :class="state.selectedFilename === note.filename && state.currentView === 'editor' ? 'surface-note-active' : 'surface-soft'"
-            :style="userShareFilenameSet.has(note.filename) ? { boxShadow: 'inset 4px 0 0 var(--accent-strong)' } : {}"
+            class="retro-note-row relative mb-2 flex w-full items-stretch gap-2"
           >
-            <button class="min-w-0 flex-1 text-left" @click="openNote(note.filename)">
-              <p class="truncate text-sm font-medium">{{ note.displayName }}</p>
-              <p class="mt-1 text-xs" :style="{ color: 'var(--vp-c-text-2)' }">
+            <button
+              class="retro-note-button surface-soft action-button min-w-0 flex-1 rounded-2xl border text-left transition"
+              :class="[
+                state.selectedFilename === note.filename && state.currentView === 'editor' ? 'surface-note-active' : '',
+                userShareFilenameSet.has(note.filename) ? 'retro-note-shared' : ''
+              ]"
+              @click="openNote(note.filename)"
+            >
+              <p class="retro-note-label truncate text-sm font-semibold">{{ note.displayName }}</p>
+              <p class="retro-note-meta mt-1 text-xs" :style="{ color: 'var(--vp-c-text-2)' }">
                 {{ formatDate(note.updatedAt) }}
               </p>
             </button>
             <button
-              class="rounded-xl p-2 transition"
+              class="retro-note-menu-button surface-soft action-button rounded-xl border px-3 py-2 text-sm transition"
               :style="{ color: 'var(--vp-c-text-2)' }"
               aria-label="Note actions"
               @click="toggleDotMenu($event, note.filename)"
@@ -1693,8 +1976,11 @@ onBeforeUnmount(() => {
         </div>
       </aside>
 
-      <main class="flex min-h-[70vh] min-w-0 flex-1 flex-col gap-4 lg:min-h-0 lg:h-full">
-        <div class="glass-panel rounded-3xl p-4 lg:hidden">
+      <main
+        class="retro-window retro-workspace flex min-h-[70vh] min-w-0 flex-1 flex-col gap-4 rounded-3xl p-4 lg:min-h-0 lg:h-full"
+        :data-window-title="state.currentView === 'admin' ? 'ADMIN PANEL' : state.currentView === 'account' ? 'ACCOUNT SETTINGS' : state.selectedFilename || (state.isCreatingNew ? 'NEW NOTE' : 'TEXTBIN WORKSPACE')"
+      >
+        <div class="glass-panel retro-window rounded-3xl p-4 lg:hidden" data-window-title="MOBILE ACTIONS">
           <div class="mb-3 flex gap-2">
             <button
               class="flex-1 rounded-2xl px-4 py-3 text-sm font-medium transition"
@@ -1705,11 +1991,11 @@ onBeforeUnmount(() => {
             </button>
           </div>
 
-          <label class="block">
+          <label class="block w-full min-w-0">
             <span class="mb-2 block text-xs uppercase tracking-[0.25em]" :style="{ color: 'var(--vp-c-text-3)' }">Files</span>
             <select
               :value="state.selectedFilename"
-              class="surface-soft w-full rounded-2xl border px-3 py-3 text-sm outline-none transition"
+              class="surface-soft block w-full min-w-full max-w-none rounded-2xl border px-3 py-3 text-sm outline-none transition"
               :style="{ color: 'var(--vp-c-text-1)' }"
               @change="
                 ($event) => {
@@ -1726,7 +2012,7 @@ onBeforeUnmount(() => {
           </label>
         </div>
 
-        <div class="glass-panel relative min-w-0 flex-1 overflow-x-hidden rounded-3xl p-4 sm:p-6 lg:min-h-0 lg:p-7">
+        <div class="glass-panel retro-main-panel relative min-w-0 flex-1 overflow-x-hidden overflow-y-auto rounded-3xl p-4 sm:p-6 lg:min-h-0 lg:p-7">
           <div v-if="state.currentView === 'admin'" class="flex h-full min-h-0 flex-col gap-4">
             <div class="flex flex-col gap-3 border-b pb-4 sm:flex-row sm:items-center sm:justify-between" :style="{ borderColor: 'var(--vp-c-divider)' }">
               <div>
@@ -1760,7 +2046,7 @@ onBeforeUnmount(() => {
             </div>
 
             <template v-else>
-              <div v-if="state.adminTab === 'users'" class="flex min-h-0 flex-1 flex-col gap-4">
+              <div v-if="state.adminTab === 'users'" class="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
                 <div class="glass-panel rounded-3xl p-4">
                   <p class="text-xs uppercase tracking-[0.25em]" :style="{ color: 'var(--vp-c-text-3)' }">Create user</p>
                   <h3 class="mt-1 text-lg font-semibold">New account</h3>
@@ -1797,7 +2083,7 @@ onBeforeUnmount(() => {
                   </p>
                 </div>
 
-                <div class="glass-panel min-h-0 rounded-3xl p-4">
+                <div class="glass-panel flex min-h-0 flex-1 flex-col overflow-hidden rounded-3xl p-4">
                   <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div>
                       <p class="text-xs uppercase tracking-[0.25em]" :style="{ color: 'var(--vp-c-text-3)' }">Active users</p>
@@ -1813,7 +2099,7 @@ onBeforeUnmount(() => {
                     </select>
                   </div>
 
-                  <div class="max-h-[52vh] space-y-3 overflow-y-auto pr-1">
+                  <div class="h-full min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
                     <div v-for="user in filteredAdminUsers" :key="user.id" class="surface-soft rounded-2xl border p-4">
                       <div class="flex flex-col gap-4">
                         <div class="min-w-0">
@@ -1821,18 +2107,14 @@ onBeforeUnmount(() => {
                             <p class="text-sm font-semibold">{{ user.username }}</p>
                             <span
                               class="rounded-full px-2 py-1 text-[11px] uppercase tracking-[0.2em]"
-                              :style="
-                                user.role === 'admin'
-                                  ? { background: 'var(--admin-role-soft)', color: 'var(--admin-role-text)' }
-                                  : { background: 'var(--vp-c-brand-soft)', color: 'var(--accent-strong)' }
-                              "
+                              :style="getRoleBadgeStyle(user.role)"
                             >
                               {{ user.role }}
                             </span>
                             <span
                               v-if="user.blocked"
                               class="rounded-full px-2 py-1 text-[11px] uppercase tracking-[0.2em]"
-                              :style="{ background: 'var(--danger-soft)', color: 'var(--danger)' }"
+                              :style="getBlockedBadgeStyle()"
                             >
                               blocked
                             </span>
@@ -1855,12 +2137,11 @@ onBeforeUnmount(() => {
                         </div>
 
                         <div class="flex flex-wrap gap-2">
-                          <button class="surface-soft admin-action action-button rounded-xl border px-3 py-2 text-sm transition" @click="loadAdminUserSessions(user.id, user.username)">Sessions</button>
                           <button class="surface-soft admin-action action-button rounded-xl border px-3 py-2 text-sm transition" @click="resetUserPassword(user)">Reset password</button>
                           <button class="surface-soft admin-action action-button rounded-xl border px-3 py-2 text-sm transition" @click="toggleUserRole(user)">
                             Make {{ user.role === "admin" ? "user" : "admin" }}
                           </button>
-                          <button class="surface-soft admin-action action-button rounded-xl border px-3 py-2 text-sm transition" @click="toggleUserBlocked(user)">
+                          <button class="admin-action danger-button rounded-xl border px-3 py-2 text-sm transition" :style="{ color: 'var(--danger)', borderColor: 'var(--danger)' }" @click="toggleUserBlocked(user)">
                             {{ user.blocked ? "Unblock" : "Block" }}
                           </button>
                           <button class="admin-action danger-button rounded-xl border px-3 py-2 text-sm transition" :style="{ color: 'var(--danger)', borderColor: 'var(--danger)' }" @click="deleteUser(user)">
@@ -1871,46 +2152,64 @@ onBeforeUnmount(() => {
                     </div>
                   </div>
 
-                  <div v-if="state.adminUserSessionsTarget" class="glass-panel rounded-3xl p-4">
-                    <div class="mb-4 flex items-center justify-between gap-3">
-                      <div>
-                        <p class="text-xs uppercase tracking-[0.25em]" :style="{ color: 'var(--vp-c-text-3)' }">User sessions</p>
-                        <h3 class="mt-1 text-lg font-semibold">{{ state.adminUserSessionsTarget }}</h3>
-                      </div>
-                      <button class="surface-soft action-button rounded-xl border px-3 py-2 text-sm transition" @click="state.adminUserSessionsTarget = ''; state.adminUserSessions = []">
-                        Close
-                      </button>
-                    </div>
+                </div>
+              </div>
 
-                    <div v-if="state.adminUserSessionsLoading" class="text-sm" :style="{ color: 'var(--vp-c-text-2)' }">
-                      Loading sessions...
+              <div v-else-if="state.adminTab === 'sessions'" class="min-h-0 flex-1 overflow-y-auto pr-1">
+                <div class="glass-panel min-h-0 overflow-hidden rounded-3xl p-4">
+                  <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <p class="text-xs uppercase tracking-[0.25em]" :style="{ color: 'var(--vp-c-text-3)' }">User sessions</p>
+                      <h3 class="mt-1 text-lg font-semibold">Session overview</h3>
                     </div>
+                    <label class="block min-w-[220px]">
+                      <span class="mb-2 block text-xs uppercase tracking-[0.25em]" :style="{ color: 'var(--vp-c-text-3)' }">Selected user</span>
+                      <select
+                        v-model="state.adminSessionsUsername"
+                        class="surface-soft w-full rounded-2xl border px-3 py-2 text-sm outline-none"
+                        @change="loadAdminSessions(state.adminSessionsUsername)"
+                      >
+                        <option value="all">All users</option>
+                        <option v-for="user in state.adminUsers" :key="`admin-sessions-${user.id}`" :value="user.username">
+                          {{ user.username }}
+                        </option>
+                      </select>
+                    </label>
+                  </div>
 
-                    <div v-else-if="state.adminUserSessions.length === 0" class="surface-soft rounded-2xl border p-4 text-sm" :style="{ color: 'var(--vp-c-text-2)' }">
-                      No active sessions for this user.
-                    </div>
+                  <div v-if="state.adminSessionsLoading" class="text-sm" :style="{ color: 'var(--vp-c-text-2)' }">
+                    Loading sessions...
+                  </div>
 
-                    <div v-for="session in state.adminUserSessions" :key="`admin-session-${session.id}`" class="surface-soft mb-3 rounded-2xl border p-4">
-                      <div class="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-                        <div class="min-w-0 flex-1">
-                          <div class="mt-3 grid gap-3 text-xs xl:grid-cols-5" :style="{ color: 'var(--vp-c-text-2)' }">
-                            <div class="stat-card rounded-2xl px-3 py-2">
+                  <div v-else-if="state.adminSessions.length === 0" class="surface-soft rounded-2xl border p-4 text-sm" :style="{ color: 'var(--vp-c-text-2)' }">
+                    No active sessions.
+                  </div>
+
+                  <div v-else class="min-h-0 space-y-3 overflow-y-auto pr-1">
+                    <div v-for="session in state.adminSessions" :key="`admin-session-${session.id}`" class="surface-soft rounded-2xl border p-4">
+                      <div class="flex flex-col gap-4">
+                        <div class="min-w-0">
+                          <div class="flex flex-wrap items-center gap-2">
+                            <p class="text-sm font-semibold">{{ session.username }}</p>
+                          </div>
+                          <div class="mt-3 grid gap-3 text-xs md:grid-cols-2 2xl:grid-cols-3" :style="{ color: 'var(--vp-c-text-2)' }">
+                            <div class="stat-card min-w-0 rounded-2xl px-3 py-2">
                               <p class="uppercase tracking-[0.2em]">Created</p>
                               <p class="mt-1 text-[13px] break-words" :style="{ color: 'var(--vp-c-text-1)' }">{{ formatDate(session.createdAt) }}</p>
                             </div>
-                            <div class="stat-card rounded-2xl px-3 py-2">
+                            <div class="stat-card min-w-0 rounded-2xl px-3 py-2">
                               <p class="uppercase tracking-[0.2em]">Expires</p>
                               <p class="mt-1 text-[13px] break-words" :style="{ color: 'var(--vp-c-text-1)' }">{{ formatDate(session.expiresAt) }}</p>
                             </div>
-                            <div class="stat-card rounded-2xl px-3 py-2">
+                            <div class="stat-card min-w-0 rounded-2xl px-3 py-2">
                               <p class="uppercase tracking-[0.2em]">Last used</p>
                               <p class="mt-1 text-[13px] break-words" :style="{ color: 'var(--vp-c-text-1)' }">{{ formatDate(session.lastUsedAt) }}</p>
                             </div>
-                            <div class="stat-card rounded-2xl px-3 py-2">
+                            <div class="stat-card min-w-0 rounded-2xl px-3 py-2">
                               <p class="uppercase tracking-[0.2em]">IP</p>
                               <p class="mt-1 text-[13px] break-words" :style="{ color: 'var(--vp-c-text-1)' }">{{ session.ip }}</p>
                             </div>
-                            <div class="stat-card rounded-2xl px-3 py-2">
+                            <div class="stat-card min-w-0 rounded-2xl px-3 py-2 md:col-span-2 2xl:col-span-2">
                               <p class="uppercase tracking-[0.2em]">User agent</p>
                               <p class="mt-1 text-[13px] break-words" :style="{ color: 'var(--vp-c-text-1)' }">{{ formatUserAgentLabel(session.userAgent) }}</p>
                             </div>
@@ -1928,7 +2227,7 @@ onBeforeUnmount(() => {
               </div>
 
               <div v-else-if="state.adminTab === 'shares'" class="min-h-0 flex-1 overflow-y-auto pr-1">
-                <div class="glass-panel min-h-0 rounded-3xl p-4">
+                <div class="glass-panel min-h-0 overflow-hidden rounded-3xl p-4">
                   <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div>
                       <p class="text-xs uppercase tracking-[0.25em]" :style="{ color: 'var(--vp-c-text-3)' }">Active links</p>
@@ -1953,17 +2252,13 @@ onBeforeUnmount(() => {
                   </div>
 
                   <div v-for="share in filteredAdminShares" :key="share.id" class="surface-soft mb-3 rounded-2xl border p-4">
-                    <div class="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-                      <div class="min-w-0 flex-1">
+                    <div class="flex flex-col gap-4">
+                      <div class="min-w-0">
                         <div class="flex flex-wrap items-center gap-2">
                           <p class="text-sm font-semibold">{{ share.filename }}</p>
                           <span
                             class="rounded-full px-2 py-1 text-[11px] uppercase tracking-[0.2em]"
-                            :style="
-                              state.adminUsers.find((user) => user.username === share.username)?.role === 'admin'
-                                ? { background: 'var(--admin-role-soft)', color: 'var(--admin-role-text)' }
-                                : { background: 'var(--vp-c-brand-soft)', color: 'var(--accent-strong)' }
-                            "
+                            :style="getRoleBadgeStyle(state.adminUsers.find((user) => user.username === share.username)?.role)"
                           >
                             {{ share.username }}
                           </span>
@@ -1990,24 +2285,24 @@ onBeforeUnmount(() => {
                             Edit: {{ publicOrigin }}{{ share.editUrlPath }}
                           </a>
                         </div>
-                        <div class="mt-3 grid gap-3 text-xs xl:grid-cols-5" :style="{ color: 'var(--vp-c-text-2)' }">
-                          <div class="stat-card rounded-2xl px-3 py-2">
+                        <div class="mt-3 grid gap-3 text-xs md:grid-cols-2 2xl:grid-cols-3" :style="{ color: 'var(--vp-c-text-2)' }">
+                          <div class="stat-card min-w-0 rounded-2xl px-3 py-2">
                             <p class="uppercase tracking-[0.2em]">State</p>
                             <p class="mt-1 text-[13px] break-words" :style="{ color: 'var(--vp-c-text-1)' }">{{ share.state }}</p>
                           </div>
-                          <div class="stat-card rounded-2xl px-3 py-2">
+                          <div class="stat-card min-w-0 rounded-2xl px-3 py-2">
                             <p class="uppercase tracking-[0.2em]">Views</p>
                             <p class="mt-1 text-[13px]" :style="{ color: 'var(--vp-c-text-1)' }">{{ share.viewCount }}</p>
                           </div>
-                          <div class="stat-card rounded-2xl px-3 py-2">
+                          <div class="stat-card min-w-0 rounded-2xl px-3 py-2">
                             <p class="uppercase tracking-[0.2em]">Edits</p>
                             <p class="mt-1 text-[13px]" :style="{ color: 'var(--vp-c-text-1)' }">{{ share.editCount }}</p>
                           </div>
-                          <div class="stat-card rounded-2xl px-3 py-2">
+                          <div class="stat-card min-w-0 rounded-2xl px-3 py-2">
                             <p class="uppercase tracking-[0.2em]">Password</p>
                             <p class="mt-1 text-[13px]" :style="{ color: 'var(--vp-c-text-1)' }">{{ share.hasPassword ? "Protected" : "Open" }}</p>
                           </div>
-                          <div class="stat-card rounded-2xl px-3 py-2">
+                          <div class="stat-card min-w-0 rounded-2xl px-3 py-2">
                             <p class="uppercase tracking-[0.2em]">Updated</p>
                             <p class="mt-1 text-[13px] break-words" :style="{ color: 'var(--vp-c-text-1)' }">{{ formatDate(share.updatedAt) }}</p>
                           </div>
@@ -2055,7 +2350,7 @@ onBeforeUnmount(() => {
               </div>
 
               <div v-else-if="state.adminTab === 'notes'" class="min-h-0 flex-1 overflow-y-auto pr-1">
-                <div class="glass-panel min-h-0 rounded-3xl p-4">
+                <div class="glass-panel flex min-h-0 flex-1 flex-col overflow-hidden rounded-3xl p-4">
                   <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div>
                       <p class="text-xs uppercase tracking-[0.25em]" :style="{ color: 'var(--vp-c-text-3)' }">Recent notes</p>
@@ -2081,8 +2376,8 @@ onBeforeUnmount(() => {
                   </div>
 
                   <div v-for="note in state.adminNotes" :key="`admin-note-${note.filename}`" class="surface-soft mb-3 rounded-2xl border p-4">
-                    <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                      <div class="min-w-0 flex-1">
+                    <div class="flex flex-col gap-4">
+                      <div class="min-w-0">
                         <p class="truncate text-sm font-semibold">{{ note.displayName }}</p>
                         <p v-if="note.ownerUsername" class="mt-2 text-xs uppercase tracking-[0.2em]" :style="{ color: 'var(--vp-c-text-3)' }">
                           {{ note.ownerUsername }}
@@ -2118,15 +2413,6 @@ onBeforeUnmount(() => {
                   <h3 class="mt-1 text-lg font-semibold">Default behavior</h3>
 
                   <div class="mt-4 space-y-4">
-                    <label class="block">
-                      <span class="mb-2 block text-sm" :style="{ color: 'var(--vp-c-text-2)' }">Default theme</span>
-                      <select v-model="state.settings.defaultTheme" class="surface-soft w-full rounded-2xl border px-4 py-3 text-sm outline-none">
-                        <option value="system">System default</option>
-                        <option value="dark">Dark</option>
-                        <option value="light">Light</option>
-                      </select>
-                    </label>
-
                     <label class="block">
                       <span class="mb-2 block text-sm" :style="{ color: 'var(--vp-c-text-2)' }">Default read slug length</span>
                       <input
@@ -2243,32 +2529,32 @@ onBeforeUnmount(() => {
               </div>
 
               <div v-for="session in state.meSessions" :key="`my-session-${session.id}`" class="surface-soft mb-3 rounded-2xl border p-4">
-                <div class="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-                  <div class="min-w-0 flex-1">
+                <div class="flex flex-col gap-4">
+                  <div class="min-w-0">
                     <div class="flex flex-wrap items-center gap-2">
                       <p class="text-sm font-semibold">{{ session.current ? "Current session" : "Other session" }}</p>
                       <span v-if="session.current" class="rounded-full px-2 py-1 text-[11px] uppercase tracking-[0.2em]" :style="{ background: 'var(--vp-c-brand-soft)', color: 'var(--accent-strong)' }">
                         current
                       </span>
                     </div>
-                    <div class="mt-3 grid gap-3 text-xs xl:grid-cols-5" :style="{ color: 'var(--vp-c-text-2)' }">
-                      <div class="stat-card rounded-2xl px-3 py-2">
+                    <div class="mt-3 grid gap-3 text-xs md:grid-cols-2 2xl:grid-cols-3" :style="{ color: 'var(--vp-c-text-2)' }">
+                      <div class="stat-card min-w-0 rounded-2xl px-3 py-2">
                         <p class="uppercase tracking-[0.2em]">Created</p>
                         <p class="mt-1 text-[13px] break-words" :style="{ color: 'var(--vp-c-text-1)' }">{{ formatDate(session.createdAt) }}</p>
                       </div>
-                      <div class="stat-card rounded-2xl px-3 py-2">
+                      <div class="stat-card min-w-0 rounded-2xl px-3 py-2">
                         <p class="uppercase tracking-[0.2em]">Expires</p>
                         <p class="mt-1 text-[13px] break-words" :style="{ color: 'var(--vp-c-text-1)' }">{{ formatDate(session.expiresAt) }}</p>
                       </div>
-                      <div class="stat-card rounded-2xl px-3 py-2">
+                      <div class="stat-card min-w-0 rounded-2xl px-3 py-2">
                         <p class="uppercase tracking-[0.2em]">Last used</p>
                         <p class="mt-1 text-[13px] break-words" :style="{ color: 'var(--vp-c-text-1)' }">{{ formatDate(session.lastUsedAt) }}</p>
                       </div>
-                      <div class="stat-card rounded-2xl px-3 py-2">
+                      <div class="stat-card min-w-0 rounded-2xl px-3 py-2">
                         <p class="uppercase tracking-[0.2em]">IP</p>
                         <p class="mt-1 text-[13px] break-words" :style="{ color: 'var(--vp-c-text-1)' }">{{ session.ip }}</p>
                       </div>
-                      <div class="stat-card rounded-2xl px-3 py-2">
+                      <div class="stat-card min-w-0 rounded-2xl px-3 py-2">
                         <p class="uppercase tracking-[0.2em]">User agent</p>
                         <p class="mt-1 text-[13px] break-words" :style="{ color: 'var(--vp-c-text-1)' }">{{ formatUserAgentLabel(session.userAgent) }}</p>
                       </div>
@@ -2288,27 +2574,27 @@ onBeforeUnmount(() => {
                   No active links for your account.
               </div>
               <div v-for="share in state.userShares" :key="`account-share-${share.filename}`" class="surface-soft mb-3 rounded-2xl border p-4">
-                <div class="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-                  <div class="min-w-0 flex-1">
+                <div class="flex flex-col gap-4">
+                  <div class="min-w-0">
                     <p class="text-sm font-semibold">{{ share.filename }}</p>
-                    <div class="mt-3 grid gap-3 text-xs xl:grid-cols-5" :style="{ color: 'var(--vp-c-text-2)' }">
-                      <div class="stat-card rounded-2xl px-3 py-2">
+                    <div class="mt-3 grid gap-3 text-xs md:grid-cols-2 2xl:grid-cols-3" :style="{ color: 'var(--vp-c-text-2)' }">
+                      <div class="stat-card min-w-0 rounded-2xl px-3 py-2">
                         <p class="uppercase tracking-[0.2em]">State</p>
                         <p class="mt-1 text-[13px]" :style="{ color: 'var(--vp-c-text-1)' }">{{ share.state }}</p>
                       </div>
-                      <div class="stat-card rounded-2xl px-3 py-2">
+                      <div class="stat-card min-w-0 rounded-2xl px-3 py-2">
                         <p class="uppercase tracking-[0.2em]">Views</p>
                         <p class="mt-1 text-[13px]" :style="{ color: 'var(--vp-c-text-1)' }">{{ share.viewCount }}</p>
                       </div>
-                      <div class="stat-card rounded-2xl px-3 py-2">
+                      <div class="stat-card min-w-0 rounded-2xl px-3 py-2">
                         <p class="uppercase tracking-[0.2em]">Edits</p>
                         <p class="mt-1 text-[13px]" :style="{ color: 'var(--vp-c-text-1)' }">{{ share.editCount }}</p>
                       </div>
-                      <div class="stat-card rounded-2xl px-3 py-2">
+                      <div class="stat-card min-w-0 rounded-2xl px-3 py-2">
                         <p class="uppercase tracking-[0.2em]">Password</p>
                         <p class="mt-1 text-[13px]" :style="{ color: 'var(--vp-c-text-1)' }">{{ share.hasPassword ? "Protected" : "Open" }}</p>
                       </div>
-                      <div class="stat-card rounded-2xl px-3 py-2">
+                      <div class="stat-card min-w-0 rounded-2xl px-3 py-2">
                         <p class="uppercase tracking-[0.2em]">Updated</p>
                         <p class="mt-1 text-[13px] break-words" :style="{ color: 'var(--vp-c-text-1)' }">{{ formatDate(share.updatedAt) }}</p>
                       </div>
@@ -2320,6 +2606,25 @@ onBeforeUnmount(() => {
                       @click="copyOwnShareLink(share)"
                     >
                       Copy link
+                    </button>
+                    <button
+                      class="surface-soft admin-action action-button rounded-xl border px-3 py-2 text-sm transition"
+                      @click="changeOwnShareSlug(share)"
+                    >
+                      Change {{ share.state }} link
+                    </button>
+                    <button
+                      class="surface-soft admin-action action-button rounded-xl border px-3 py-2 text-sm transition"
+                      @click="setOwnSharePassword(share)"
+                    >
+                      {{ share.hasPassword ? "Change password" : "Add password" }}
+                    </button>
+                    <button
+                      v-if="share.hasPassword"
+                      class="surface-soft admin-action action-button rounded-xl border px-3 py-2 text-sm transition"
+                      @click="removeOwnSharePassword(share)"
+                    >
+                      Remove password
                     </button>
                     <button
                       class="admin-action danger-button rounded-xl border px-3 py-2 text-sm transition"
@@ -2414,7 +2719,7 @@ onBeforeUnmount(() => {
               </div>
             </div>
 
-            <div class="mb-4 rounded-3xl border p-4" :style="{ borderColor: 'var(--vp-c-divider)', background: 'var(--panel-muted)' }">
+            <div class="retro-share-panel mb-4 rounded-3xl border p-4" :style="{ borderColor: 'var(--vp-c-divider)', background: 'var(--panel-muted)' }">
               <div class="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <p class="text-xs uppercase tracking-[0.25em]" :style="{ color: 'var(--vp-c-text-3)' }">Public link</p>
@@ -2559,17 +2864,19 @@ onBeforeUnmount(() => {
               </div>
             </div>
 
-            <div class="mb-3 flex min-w-0 items-start justify-between gap-3 text-xs sm:items-center" :style="{ color: 'var(--vp-c-text-2)' }">
+            <div class="retro-statusbar mb-3 flex min-w-0 items-start justify-between gap-3 text-xs sm:items-center" :style="{ color: 'var(--vp-c-text-2)' }">
               <div class="flex min-w-0 items-center gap-3">
                 <span>{{ byteCount }} bytes</span>
+                <span>|</span>
                 <span>{{ publicStatusText }}</span>
               </div>
               <span class="min-w-0 flex-1 text-right break-words">{{ state.feedback || (state.isDirty ? "Unsaved changes" : "All changes saved") }}</span>
             </div>
 
             <textarea
+              ref="editorTextarea"
               v-model="state.editorContent"
-              class="surface-soft min-h-[50vh] w-full min-w-0 flex-1 resize-none rounded-3xl border p-5 text-sm leading-7 outline-none transition"
+              class="surface-soft retro-editor-area min-h-[50vh] w-full min-w-0 flex-1 resize-none rounded-3xl border p-5 text-sm leading-7 outline-none transition"
               :style="{ color: 'var(--vp-c-text-1)', fontSize: `${state.editorFontSize}px` }"
               spellcheck="false"
               @input="
@@ -2583,3 +2890,5 @@ onBeforeUnmount(() => {
     </div>
   </div>
 </template>
+
+<style src="./retro-theme.css"></style>

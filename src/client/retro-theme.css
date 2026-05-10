@@ -1,0 +1,610 @@
+.retro-app {
+  --retro-shell-bg: #02007f;
+  --retro-shell-bg-alt: #004aad;
+  --retro-panel: #c3c3c3;
+  --retro-panel-soft: #d4d0c8;
+  --retro-panel-muted: #b8b4ac;
+  --retro-titlebar: #0a3aa8;
+  --retro-titlebar-2: #2a66d4;
+  --retro-titlebar-text: #ffffff;
+  --retro-text: #111111;
+  --retro-text-soft: #333333;
+  --retro-border-dark: #000000;
+  --retro-border-mid: #7f7f7f;
+  --retro-border-light: #ffffff;
+  --retro-input-bg: #f7f7f3;
+  --retro-button-bg: #d4d0c8;
+  --retro-button-face: #ece9d8;
+  --retro-button-green: #8fbf3d;
+  --retro-button-green-2: #6e9f1f;
+  --retro-danger-bg: #c8b5b5;
+  --retro-danger-face: #e4cece;
+  --retro-active-bg: #dbe9ff;
+  --retro-active-border: #2c5cc5;
+  --retro-status-bg: #d4d0c8;
+  --retro-editor-bg: #ffffff;
+  --retro-editor-text: #000000;
+  --retro-focus: #ffcc00;
+  --retro-success: #0d6a1f;
+  --vp-c-text-3: #314963;
+  --vp-c-text-2: #3f4c5d;
+  --vp-c-brand-soft: #f6e3a2;
+  --accent-strong: #4d3200;
+  --admin-role-soft: #f0d77f;
+  --admin-role-text: #523600;
+  --user-role-soft: #c9def7;
+  --user-role-text: #143a66;
+  --blocked-role-soft: #e0b6b6;
+  --blocked-role-text: #5c1515;
+  color: var(--retro-text);
+  font-family: "Lucida Console", "Courier New", monospace;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.dark .retro-app {
+  --retro-shell-bg: #00135e;
+  --retro-shell-bg-alt: #002d90;
+  --retro-panel: #b8c3d5;
+  --retro-panel-soft: #c8d3e2;
+  --retro-panel-muted: #aeb8ca;
+  --retro-titlebar: #001a66;
+  --retro-titlebar-2: #0a3ca8;
+  --retro-titlebar-text: #f1f5ff;
+  --retro-text: #05101e;
+  --retro-text-soft: #1b2940;
+  --retro-border-dark: #000000;
+  --retro-border-mid: #4c5f82;
+  --retro-border-light: #f3f7ff;
+  --retro-input-bg: #f0f6ff;
+  --retro-button-bg: #c3cedf;
+  --retro-button-face: #d8e1ef;
+  --retro-button-green: #9ec94b;
+  --retro-button-green-2: #7eaa28;
+  --retro-danger-bg: #ceb9bd;
+  --retro-danger-face: #ead7d9;
+  --retro-active-bg: #dce6ff;
+  --retro-active-border: #1147bc;
+  --retro-status-bg: #c3cedf;
+  --retro-editor-bg: #f7fbff;
+  --retro-editor-text: #04101e;
+  --retro-success: #8de087;
+  --vp-c-text-3: #d2dcf2;
+  --vp-c-text-2: #516684;
+  --vp-c-brand-soft: #8a6d16;
+  --accent-strong: #fff0b3;
+  --admin-role-soft: #b1871e;
+  --admin-role-text: #fff1bf;
+  --user-role-soft: #5f86b7;
+  --user-role-text: #eef5ff;
+  --blocked-role-soft: #9a5757;
+  --blocked-role-text: #ffe9e9;
+  color: var(--retro-text);
+}
+
+body {
+  background: #3b6ea5 !important;
+  color: var(--retro-text) !important;
+  font-family: "Lucida Console", "Courier New", monospace !important;
+}
+
+#app {
+  min-height: 100vh;
+}
+
+.retro-app *,
+.retro-app *::before,
+.retro-app *::after {
+  box-sizing: border-box;
+  font-family: "Lucida Console", "Courier New", monospace !important;
+}
+
+.retro-app .rounded-3xl,
+.retro-app .rounded-2xl,
+.retro-app .rounded-xl,
+.retro-app .rounded-full {
+  border-radius: 0 !important;
+}
+
+.retro-app .glass-panel,
+.retro-app .surface-soft,
+.retro-app .stat-card,
+.retro-app .menu-pop,
+.retro-app .retro-share-panel {
+  background: var(--retro-panel) !important;
+  color: var(--retro-text) !important;
+  border: 1px solid var(--retro-border-dark) !important;
+  box-shadow:
+    inset 1px 1px 0 var(--retro-border-light),
+    inset -1px -1px 0 var(--retro-border-mid) !important;
+}
+
+.retro-app .retro-shell {
+  gap: 0.5rem !important;
+}
+
+.retro-app .retro-window {
+  position: relative;
+  overflow: hidden;
+  padding-top: 2.2rem !important;
+}
+
+.retro-app .retro-window::before {
+  content: attr(data-window-title);
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1.7rem;
+  display: flex;
+  align-items: center;
+  padding: 0 0.55rem;
+  background: linear-gradient(90deg, var(--retro-titlebar) 0%, var(--retro-titlebar-2) 100%);
+  color: var(--retro-titlebar-text);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--retro-border-dark);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+.retro-app .retro-hero-label {
+  color: #fff7c2 !important;
+  text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.72);
+  font-weight: 700;
+}
+
+.retro-app .retro-login-shell {
+  padding-top: 0.25rem;
+}
+
+.retro-app .retro-sidebar,
+.retro-app .retro-workspace,
+.retro-app .retro-mobile-panel,
+.retro-app .retro-login-window,
+.retro-app .retro-public-window {
+  background: var(--retro-panel) !important;
+}
+
+.retro-app .retro-sidebar {
+  max-width: 21rem !important;
+}
+
+.retro-app h1,
+.retro-app h2,
+.retro-app h3 {
+  letter-spacing: 0 !important;
+  color: var(--retro-text) !important;
+}
+
+.retro-app p,
+.retro-app span,
+.retro-app label,
+.retro-app div {
+  text-rendering: optimizeLegibility;
+}
+
+.retro-app button,
+.retro-app input,
+.retro-app select {
+  border-radius: 0 !important;
+  font: inherit !important;
+  font-family: "Lucida Console", "Courier New", monospace !important;
+}
+
+.retro-app textarea {
+  border-radius: 0 !important;
+  font-family: "Lucida Console", "Courier New", monospace !important;
+}
+
+.retro-app input,
+.retro-app select,
+.retro-app textarea {
+  background: var(--retro-input-bg) !important;
+  color: var(--retro-text) !important;
+  border: 1px solid var(--retro-border-dark) !important;
+  box-shadow:
+    inset 1px 1px 0 var(--retro-border-mid),
+    inset -1px -1px 0 var(--retro-border-light) !important;
+  padding-top: 0.45rem !important;
+  padding-bottom: 0.45rem !important;
+}
+
+.retro-app select {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  padding-right: 2rem !important;
+  background-image:
+    linear-gradient(45deg, transparent 50%, #000000 50%),
+    linear-gradient(135deg, #000000 50%, transparent 50%),
+    linear-gradient(to bottom, #efefef, #d7d7d7);
+  background-position:
+    calc(100% - 0.9rem) calc(50% - 0.12rem),
+    calc(100% - 0.55rem) calc(50% - 0.12rem),
+    calc(100% - 1.55rem) 50%;
+  background-size:
+    0.35rem 0.35rem,
+    0.35rem 0.35rem,
+    1.2rem 1.45rem;
+  background-repeat: no-repeat;
+  box-shadow:
+    inset 1px 1px 0 var(--retro-border-light),
+    inset -1px -1px 0 var(--retro-border-mid),
+    inset 0 0 0 1px #b7b7b7 !important;
+}
+
+.retro-app select:hover {
+  box-shadow:
+    inset 1px 1px 0 var(--retro-border-light),
+    inset -1px -1px 0 var(--retro-border-mid),
+    inset 0 0 0 1px #7f7f7f !important;
+}
+
+.retro-app textarea,
+.retro-app .retro-editor-area {
+  background: var(--retro-editor-bg) !important;
+  color: var(--retro-editor-text) !important;
+  font-family: "Lucida Console", "Courier New", monospace !important;
+  line-height: 1.45 !important;
+}
+
+.retro-app button {
+  min-height: 2rem;
+  background: #c3c3c3;
+  color: var(--retro-text) !important;
+  border: 1px solid var(--retro-border-dark) !important;
+  box-shadow:
+    inset -2px -2px 0 0 #262626,
+    inset 2px 2px 0 0 #f0f0f0,
+    inset -4px -4px 0 0 #7e7e7e,
+    inset 4px 4px 0 0 #d6d6d6 !important;
+  text-transform: none;
+}
+
+.retro-app button:not(.surface-soft):not(.action-button):not(.danger-button):not(.admin-action):not(.surface-note-active) {
+  background: var(--retro-button-green) !important;
+  color: #081600 !important;
+  box-shadow:
+    inset -2px -2px 0 0 #315400,
+    inset 2px 2px 0 0 #d8ef9d,
+    inset -4px -4px 0 0 #567d12 !important;
+}
+
+.retro-app .surface-soft.action-button,
+.retro-app .admin-action,
+.retro-app .menu-pop button {
+  background: #c3c3c3 !important;
+  color: var(--retro-text) !important;
+}
+
+.retro-app .danger-button {
+  background: var(--retro-danger-bg) !important;
+  color: #4b1010 !important;
+  box-shadow:
+    inset -2px -2px 0 0 #5c3131,
+    inset 2px 2px 0 0 var(--retro-danger-face),
+    inset -4px -4px 0 0 #8f6969 !important;
+}
+
+.retro-app .surface-soft.danger-button,
+.retro-app .surface-soft.action-button.danger-button,
+.retro-app .menu-pop .danger-button {
+  background: var(--retro-danger-bg) !important;
+  color: #4b1010 !important;
+  border-color: var(--retro-border-dark) !important;
+  box-shadow:
+    inset -2px -2px 0 0 #5c3131,
+    inset 2px 2px 0 0 var(--retro-danger-face),
+    inset -4px -4px 0 0 #8f6969 !important;
+}
+
+.retro-app button:hover,
+.retro-app .action-button:hover,
+.retro-app .admin-action:hover,
+.retro-app .surface-soft.action-button:hover,
+.retro-app .menu-pop button:hover {
+  background: #dbdbdb !important;
+  filter: none;
+}
+
+.retro-app .danger-button:hover,
+.retro-app .menu-pop .danger-button:hover,
+.retro-app .surface-soft.danger-button:hover {
+  background: var(--retro-danger-bg) !important;
+}
+
+.retro-app .danger-soft.danger-button,
+.retro-app .danger-soft.danger-button:hover,
+.retro-app .danger-soft.danger-button:active {
+  background: var(--retro-danger-bg) !important;
+}
+
+.retro-app button:disabled:hover,
+.retro-app .action-button:disabled:hover,
+.retro-app .admin-action:disabled:hover,
+.retro-app .surface-soft.action-button:disabled:hover,
+.retro-app .danger-button:disabled:hover {
+  background: inherit !important;
+  box-shadow: inherit !important;
+  filter: none !important;
+  transform: none !important;
+}
+
+.retro-app button:active,
+.retro-app .action-button:active,
+.retro-app .admin-action:active {
+  background: #c3c3c3 !important;
+  box-shadow:
+    inset 2px 2px 0 0 #262626,
+    inset -2px -2px 0 0 #f0f0f0,
+    inset 4px 4px 0 0 #7e7e7e,
+    inset -4px -4px 0 0 #d6d6d6 !important;
+  transform: translate(1px, 1px);
+}
+
+.retro-app button:not(.surface-soft):not(.action-button):not(.danger-button):not(.admin-action):active {
+  box-shadow:
+    inset 2px 2px 0 0 #315400,
+    inset -2px -2px 0 0 #d8ef9d,
+    inset 4px 4px 0 0 #567d12 !important;
+}
+
+.retro-app .danger-button:active {
+  background: var(--retro-danger-bg) !important;
+  box-shadow:
+    inset 2px 2px 0 0 #5c3131,
+    inset -2px -2px 0 0 var(--retro-danger-face),
+    inset 4px 4px 0 0 #8f6969 !important;
+}
+
+.retro-app .surface-soft.action-button.danger-button:active,
+.retro-app .surface-soft.danger-button:active,
+.retro-app .menu-pop .danger-button:active {
+  background: var(--retro-danger-bg) !important;
+  box-shadow:
+    inset 2px 2px 0 0 #5c3131,
+    inset -2px -2px 0 0 var(--retro-danger-face),
+    inset 4px 4px 0 0 #8f6969 !important;
+  transform: translate(1px, 1px);
+}
+
+.retro-app .surface-note,
+.retro-app [data-note-item] {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  margin-bottom: 0.3rem !important;
+  padding: 0 !important;
+}
+
+.retro-app .surface-note-active {
+  background: #c3c3c3 !important;
+  border-color: var(--retro-active-border) !important;
+  box-shadow:
+    inset 2px 2px 0 0 #262626,
+    inset -2px -2px 0 0 #f0f0f0,
+    inset 4px 4px 0 0 #7e7e7e !important;
+}
+
+.retro-app button.surface-note-active,
+.retro-app .surface-soft.surface-note-active,
+.retro-app .action-button.surface-note-active {
+  background: #c3c3c3 !important;
+  border-color: var(--retro-active-border) !important;
+  box-shadow:
+    inset 2px 2px 0 0 #262626,
+    inset -2px -2px 0 0 #f0f0f0,
+    inset 4px 4px 0 0 #7e7e7e,
+    inset -4px -4px 0 0 #d6d6d6 !important;
+  transform: translate(1px, 1px);
+}
+
+.retro-app .menu-pop {
+  padding: 0.2rem !important;
+  width: 10rem !important;
+}
+
+.retro-app .menu-pop > button + button {
+  margin-top: 0.2rem !important;
+}
+
+.retro-app .retro-statusbar {
+  background: var(--retro-status-bg);
+  color: var(--retro-text-soft) !important;
+  border: 1px solid var(--retro-border-dark);
+  box-shadow:
+    inset 1px 1px 0 var(--retro-border-light),
+    inset -1px -1px 0 var(--retro-border-mid);
+  padding: 0.25rem 0.45rem;
+  min-height: 1.7rem;
+}
+
+.retro-app .retro-main-panel {
+  scrollbar-gutter: stable;
+}
+
+.retro-app .retro-share-panel {
+  padding-top: 0.7rem !important;
+}
+
+.retro-app .toggle-input {
+  width: 2.2rem;
+  height: 1.15rem;
+  display: inline-flex;
+  align-items: center;
+  background: var(--retro-input-bg) !important;
+  border: 1px solid var(--retro-border-dark) !important;
+  box-shadow:
+    inset 1px 1px 0 var(--retro-border-mid),
+    inset -1px -1px 0 var(--retro-border-light) !important;
+}
+
+.retro-app .toggle-input::after {
+  top: 50%;
+  left: 1px;
+  width: 0.8rem;
+  height: 0.8rem;
+  transform: translateY(-50%);
+  background: var(--retro-button-bg) !important;
+  border: 1px solid var(--retro-border-mid);
+  border-radius: 0 !important;
+  box-shadow:
+    inset 1px 1px 0 var(--retro-border-light),
+    inset -1px -1px 0 var(--retro-border-mid);
+}
+
+.retro-app .toggle-input:checked {
+  background: #dfe7f8 !important;
+  border-color: var(--retro-active-border) !important;
+}
+
+.retro-app .toggle-input:checked::after {
+  transform: translate(1rem, -50%);
+  background: #f4f8ff !important;
+}
+
+.retro-app .retro-note-button {
+  position: relative;
+  overflow: hidden;
+  padding: 0.5rem 0.6rem !important;
+}
+
+.retro-app .retro-note-button > * {
+  position: relative;
+  z-index: 1;
+}
+
+.retro-app .retro-note-button.retro-note-shared::before {
+  content: "";
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  left: 1px;
+  width: 4px;
+  background: #8fbf3d;
+  z-index: 0;
+}
+
+.retro-app .retro-note-menu-button {
+  min-width: 2.7rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.retro-app .retro-note-label {
+  line-height: 1.3;
+}
+
+.retro-app .retro-note-meta {
+  line-height: 1.35;
+}
+
+.retro-app .retro-success-text {
+  color: var(--retro-success) !important;
+  font-weight: 700;
+  text-shadow: 1px 1px 0 rgba(255, 255, 255, 0.55);
+}
+
+.retro-app [style*="var(--vp-c-brand-soft)"],
+.retro-app [style*="var(--admin-role-soft)"],
+.retro-app [style*="var(--user-role-soft)"],
+.retro-app [style*="var(--blocked-role-soft)"] {
+  box-shadow:
+    inset -1px -1px 0 0 rgba(0, 0, 0, 0.35),
+    inset 1px 1px 0 0 rgba(255, 255, 255, 0.35);
+}
+
+.retro-app * {
+  scrollbar-width: auto;
+  scrollbar-color: #7e7e7e #c3c3c3;
+}
+
+.retro-app ::-webkit-scrollbar {
+  width: 16px;
+  height: 16px;
+}
+
+.retro-app ::-webkit-scrollbar-track {
+  background: #c3c3c3;
+  border: 1px solid #000000;
+  box-shadow:
+    inset 1px 1px 0 #f0f0f0,
+    inset -1px -1px 0 #7e7e7e;
+}
+
+.retro-app ::-webkit-scrollbar-thumb {
+  background: #c3c3c3;
+  border: 1px solid #000000;
+  box-shadow:
+    inset -2px -2px 0 0 #262626,
+    inset 2px 2px 0 0 #f0f0f0,
+    inset -4px -4px 0 0 #7e7e7e;
+}
+
+.retro-app ::-webkit-scrollbar-thumb:hover {
+  background: #dbdbdb;
+}
+
+.retro-app ::-webkit-scrollbar-button {
+  background: #c3c3c3;
+  border: 1px solid #000000;
+  box-shadow:
+    inset -2px -2px 0 0 #262626,
+    inset 2px 2px 0 0 #f0f0f0,
+    inset -4px -4px 0 0 #7e7e7e;
+  height: 16px;
+  width: 16px;
+}
+
+.retro-app button:focus-visible,
+.retro-app input:focus-visible,
+.retro-app select:focus-visible,
+.retro-app textarea:focus-visible {
+  outline: 1px dotted #000000 !important;
+  outline-offset: 1px;
+}
+
+.retro-app .retro-workspace > .glass-panel,
+.retro-app .retro-workspace > div > .glass-panel {
+  background: var(--retro-panel) !important;
+}
+
+.retro-app .text-xs {
+  letter-spacing: 0.08em;
+}
+
+.retro-app .tracking-\[0\.25em\],
+.retro-app .tracking-\[0\.35em\],
+.retro-app .tracking-\[0\.3em\],
+.retro-app .tracking-\[0\.2em\] {
+  letter-spacing: 0.08em !important;
+}
+
+.retro-app a {
+  color: #002c8f;
+}
+
+.dark .retro-app a {
+  color: #0a3ca8;
+}
+
+@media (max-width: 1023px) {
+  .retro-app {
+    font-size: 12px;
+  }
+
+  .retro-app .retro-window {
+    padding-top: 2rem !important;
+  }
+
+  .retro-app .retro-window::before {
+    height: 1.5rem;
+    font-size: 10px;
+  }
+}
