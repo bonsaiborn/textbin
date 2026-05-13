@@ -264,6 +264,9 @@ body {
     inset -4px -4px 0 0 #7e7e7e,
     inset 4px 4px 0 0 #d6d6d6 !important;
   text-transform: none;
+  transition-property: background-color, box-shadow, border-color, color !important;
+  transition-duration: 80ms !important;
+  transition-timing-function: linear !important;
 }
 
 .retro-app button:not(.surface-soft):not(.action-button):not(.danger-button):not(.admin-action):not(.surface-note-active) {
