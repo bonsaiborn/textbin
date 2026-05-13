@@ -120,14 +120,14 @@ export async function listNotesForUser(username: string, sort: SortMode): Promis
   notes.sort((left, right) => {
     switch (sort) {
       case "created_asc":
-        return left.createdMs - right.createdMs || left.filename.localeCompare(right.filename);
+        return left.updatedMs - right.updatedMs || left.filename.localeCompare(right.filename);
       case "name_asc":
         return left.filename.localeCompare(right.filename);
       case "name_desc":
         return right.filename.localeCompare(left.filename);
       case "created_desc":
       default:
-        return right.createdMs - left.createdMs || right.filename.localeCompare(left.filename);
+        return right.updatedMs - left.updatedMs || right.filename.localeCompare(left.filename);
     }
   });
 

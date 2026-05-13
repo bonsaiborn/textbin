@@ -11,7 +11,7 @@ import { assertSafeUsername, createNote, deleteNote, getDownloadPayload, listNot
 import { accessPublicShare, createPublicEditGrantToken, deleteShareById, deleteShareForUser, getShareByEditSlug, getShareById, getShareByReadSlug, getShareForUser, hasPublicEditGrant, listAllSharesWithUsers, listSharesForUser, openPublicEdit, renameShareFilenameForUser, savePublicEdit, toShareSummary, updateShareById, upsertShareForUser, verifyPublicEditAccess } from "./shares.js";
 import type { InstanceSettings, SessionRecord, ShareLinkKind, UserRecord, UserRole } from "./types.js";
 
-const PUBLIC_EDIT_COOKIE = "textbin_public_edit";
+const PUBLIC_EDIT_GRANT_HEADER = "x-public-edit-grant";
 
 function isErrorWithMessage(value: unknown): value is Error {
   return value instanceof Error;
@@ -145,6 +145,11 @@ function hasUnsafePublicEditRequest(request: FastifyRequest): boolean {
 function hasJsonContentType(request: FastifyRequest): boolean {
   const contentType = request.headers["content-type"];
   return typeof contentType === "string" && contentType.toLowerCase().startsWith("application/json");
+}
+
+function getPublicEditGrant(request: FastifyRequest): string | undefined {
+  const header = request.headers[PUBLIC_EDIT_GRANT_HEADER];
+  return typeof header === "string" && header.trim() ? header.trim() : undefined;
 }
 
 function isExplicitlyBlockedPath(url: string | undefined): boolean {
@@ -708,18 +713,8 @@ async function buildServer() {
       }
       throw error;
     }
-    const token = createPublicEditGrantToken(share);
-
-    reply.setCookie(PUBLIC_EDIT_COOKIE, token, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: config.cookieSecure,
-      domain: config.cookieDomain,
-      path: "/",
-      maxAge: 12 * 60 * 60
-    });
-
-    return reply.send({ success: true });
+    const grantToken = createPublicEditGrantToken(share);
+    return reply.send({ success: true, grantToken });
   });
 
   app.get("/api/public/edit/:slug", async (request, reply) => {
@@ -729,7 +724,7 @@ async function buildServer() {
       return reply.status(404).send({ message: "Not found" });
     }
 
-    const hasAccess = !share.password_hash || hasPublicEditGrant(share, request.cookies[PUBLIC_EDIT_COOKIE]);
+    const hasAccess = !share.password_hash || hasPublicEditGrant(share, getPublicEditGrant(request));
     const result = await openPublicEdit(slug, hasAccess);
     if (!result.requiresPassword) {
       logInfo("PUBLIC_EDIT_OPENED", {
@@ -760,7 +755,7 @@ async function buildServer() {
       return reply.status(404).send({ message: "Not found" });
     }
 
-    const hasAccess = !share.password_hash || hasPublicEditGrant(share, request.cookies[PUBLIC_EDIT_COOKIE]);
+    const hasAccess = !share.password_hash || hasPublicEditGrant(share, getPublicEditGrant(request));
     if (!hasAccess) {
       logWarn("PUBLIC_EDIT_DENIED", {
         slug,

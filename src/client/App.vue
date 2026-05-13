@@ -167,6 +167,7 @@ const state = reactive({
   publicEditFilename: "",
   publicEditContent: "",
   publicEditPassword: "",
+  publicEditGrant: "",
   publicEditRequiresPassword: false,
   publicEditLoading: false,
   publicEditSaving: false,
@@ -249,6 +250,34 @@ const publicStatusText = computed(() => {
 });
 
 const SORT_STORAGE_KEY = "textbin-sort";
+
+function sortNotesInPlace(notes: NoteMeta[]) {
+  const toMs = (value: string) => new Date(value).getTime();
+  notes.sort((left, right) => {
+    switch (state.sort) {
+      case "created_asc":
+        return toMs(left.updatedAt) - toMs(right.updatedAt) || left.filename.localeCompare(right.filename);
+      case "name_asc":
+        return left.filename.localeCompare(right.filename);
+      case "name_desc":
+        return right.filename.localeCompare(left.filename);
+      case "created_desc":
+      default:
+        return toMs(right.updatedAt) - toMs(left.updatedAt) || right.filename.localeCompare(left.filename);
+    }
+  });
+}
+
+function upsertLocalNote(note: NoteMeta, previousFilename?: string) {
+  const targetFilename = previousFilename ?? note.filename;
+  const existingIndex = state.notes.findIndex((item) => item.filename === targetFilename);
+  if (existingIndex >= 0) {
+    state.notes.splice(existingIndex, 1, note);
+  } else {
+    state.notes.push(note);
+  }
+  sortNotesInPlace(state.notes);
+}
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
@@ -673,19 +702,28 @@ async function loadPublicEdit() {
   state.publicEditError = "";
   state.publicEditSuccess = "";
   try {
+    const headers = state.publicEditGrant ? { "X-Public-Edit-Grant": state.publicEditGrant } : undefined;
     const payload = await api<{ filename?: string; content?: string; requiresPassword: boolean }>(
-      `/api/public/edit/${encodeURIComponent(state.publicEditSlug)}`
+      `/api/public/edit/${encodeURIComponent(state.publicEditSlug)}`,
+      {
+        headers
+      }
     );
 
     state.publicEditFilename = payload.filename ?? "";
     state.publicEditRequiresPassword = payload.requiresPassword;
     state.publicEditContent = payload.content ?? "";
+    if (payload.requiresPassword) {
+      state.publicEditGrant = "";
+      state.publicEditPassword = "";
+    }
     document.title = payload.requiresPassword
       ? "Protected Editable TextBin Note"
       : `${(payload.filename ?? "").replace(/\.txt$/i, "") || "Editable Text"} - TextBin`;
   } catch (error) {
     state.publicEditError = error instanceof Error ? error.message : "Could not load editable note";
     state.publicEditContent = "";
+    state.publicEditGrant = "";
   } finally {
     state.publicEditLoading = false;
     state.ready = true;
@@ -846,7 +884,9 @@ async function saveNote() {
       });
       state.selectedFilename = created.filename;
       state.isCreatingNew = false;
+      upsertLocalNote(created);
     } else {
+      const previousDisplayName = selectedNote.value?.displayName;
       await api(`/api/notes/${encodeURIComponent(state.selectedFilename)}`, {
         method: "PUT",
         body: JSON.stringify({
@@ -854,18 +894,28 @@ async function saveNote() {
         })
       });
 
-      if (trimmedTitle !== selectedNote.value?.displayName) {
+      const existing = selectedNote.value;
+      if (existing) {
+        upsertLocalNote({
+          ...existing,
+          displayName: trimmedTitle,
+          updatedAt: new Date().toISOString()
+        });
+      }
+
+      if (trimmedTitle !== previousDisplayName) {
         const renamed = await api<NoteMeta>(`/api/notes/${encodeURIComponent(state.selectedFilename)}/rename`, {
           method: "PATCH",
           body: JSON.stringify({
             title: trimmedTitle
           })
         });
+        upsertLocalNote(renamed, state.selectedFilename);
         state.selectedFilename = renamed.filename;
       }
     }
 
-    await Promise.all([loadNotes(), loadUserShares()]);
+    await loadUserShares();
     state.isDirty = false;
     state.feedback = "Saved";
     if (state.selectedFilename) {
@@ -1097,16 +1147,18 @@ async function verifyPublicEdit() {
   state.publicEditError = "";
   state.publicEditSuccess = "";
   try {
-    await api(`/api/public/edit/${encodeURIComponent(state.publicEditSlug)}/verify`, {
+    const payload = await api<{ success: boolean; grantToken: string }>(`/api/public/edit/${encodeURIComponent(state.publicEditSlug)}/verify`, {
       method: "POST",
       body: JSON.stringify({
         password: state.publicEditPassword
       })
     });
+    state.publicEditGrant = payload.grantToken;
     state.publicEditPassword = "";
     await loadPublicEdit();
   } catch (error) {
     state.publicEditError = error instanceof Error ? error.message : "Could not verify edit access";
+    state.publicEditGrant = "";
   } finally {
     state.publicEditLoading = false;
   }
@@ -1121,10 +1173,12 @@ async function savePublicEditContent() {
   state.publicEditError = "";
   state.publicEditSuccess = "";
   try {
+    const headers = state.publicEditGrant ? { "X-Public-Edit-Grant": state.publicEditGrant } : undefined;
     const payload = await api<{ success: boolean; filename: string; editCount: number }>(
       `/api/public/edit/${encodeURIComponent(state.publicEditSlug)}`,
       {
         method: "PUT",
+        headers,
         body: JSON.stringify({
           content: state.publicEditContent
         })
@@ -1162,7 +1216,13 @@ function scheduleAutosave() {
           content: state.editorContent
         })
       });
-      await loadNotes();
+      const existing = selectedNote.value;
+      if (existing) {
+        upsertLocalNote({
+          ...existing,
+          updatedAt: new Date().toISOString()
+        });
+      }
       state.isDirty = false;
       state.feedback = "Saved automatically";
     } finally {
@@ -1171,7 +1231,7 @@ function scheduleAutosave() {
   }, 1200);
 }
 
-function toggleDotMenu(event: MouseEvent, filename: string) {
+async function toggleDotMenu(event: MouseEvent, filename: string) {
   event.stopPropagation();
   const button = event.currentTarget as HTMLElement | null;
   if (!button) {
@@ -1190,12 +1250,34 @@ function toggleDotMenu(event: MouseEvent, filename: string) {
     return;
   }
 
+  const scrollContainer =
+    (button.closest(".overflow-y-auto") as HTMLElement | null) ??
+    (noteCard.parentElement as HTMLElement | null);
+  if (!scrollContainer) {
+    return;
+  }
+
   const cardRect = noteCard.getBoundingClientRect();
   const buttonRect = button.getBoundingClientRect();
+  const containerRect = scrollContainer.getBoundingClientRect();
+  const alignRight = `${Math.max(8, cardRect.right - buttonRect.right)}px`;
   state.contextMenuStyle = {
     top: `${Math.max(8, buttonRect.bottom - cardRect.top + 6)}px`,
-    right: `${Math.max(8, cardRect.right - buttonRect.right)}px`
+    right: alignRight
   };
+
+  await nextTick();
+  const menuElement = noteCard.querySelector(".menu-pop") as HTMLElement | null;
+  const menuHeight = menuElement?.offsetHeight ?? 116;
+  const spaceBelow = containerRect.bottom - buttonRect.bottom;
+  const spaceAbove = buttonRect.top - containerRect.top;
+
+  if (spaceBelow < menuHeight && spaceAbove > spaceBelow) {
+    state.contextMenuStyle = {
+      bottom: `${Math.max(8, cardRect.bottom - buttonRect.top + 6)}px`,
+      right: alignRight
+    };
+  }
 }
 
 function closeContextMenu() {
@@ -1607,6 +1689,7 @@ onMounted(() => {
   const editMatch = window.location.pathname.match(/^\/e\/([^/]+)$/);
   if (editMatch) {
     state.publicEditSlug = editMatch[1];
+    state.publicEditGrant = "";
     void loadPublicEdit();
     window.addEventListener("click", onBackgroundClick);
     return;
@@ -2723,7 +2806,7 @@ onBeforeUnmount(() => {
               <div class="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <p class="text-xs uppercase tracking-[0.25em]" :style="{ color: 'var(--vp-c-text-3)' }">Public link</p>
-                  <p class="mt-1 text-sm" :style="{ color: 'var(--vp-c-text-2)' }">
+                  <p class="mt-1 hidden text-sm sm:block" :style="{ color: 'var(--vp-c-text-2)' }">
                     {{ canOperateOnSavedNote ? "Configure read-only and editable public links for this note." : "Save the note first to enable public sharing controls." }}
                   </p>
                 </div>
@@ -2864,13 +2947,13 @@ onBeforeUnmount(() => {
               </div>
             </div>
 
-            <div class="retro-statusbar mb-3 flex min-w-0 items-start justify-between gap-3 text-xs sm:items-center" :style="{ color: 'var(--vp-c-text-2)' }">
+            <div class="retro-statusbar mb-3 flex min-w-0 flex-col gap-2 text-xs sm:flex-row sm:items-center sm:justify-between" :style="{ color: 'var(--vp-c-text-2)' }">
               <div class="flex min-w-0 items-center gap-3">
                 <span>{{ byteCount }} bytes</span>
                 <span>|</span>
                 <span>{{ publicStatusText }}</span>
               </div>
-              <span class="min-w-0 flex-1 text-right break-words">{{ state.feedback || (state.isDirty ? "Unsaved changes" : "All changes saved") }}</span>
+              <span class="min-w-0 whitespace-normal break-words text-left leading-5 sm:flex-1 sm:text-right">{{ state.feedback || (state.isDirty ? "Unsaved changes" : "All changes saved") }}</span>
             </div>
 
             <textarea

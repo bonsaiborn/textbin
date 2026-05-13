@@ -534,6 +534,10 @@ export async function openPublicEdit(
   }
 
   const note = await readNote(owner.username, share.filename);
+  getDb()
+    .prepare("UPDATE shares SET view_count = view_count + 1 WHERE id = ?")
+    .run(share.id);
+
   return {
     filename: note.filename,
     content: note.content,
