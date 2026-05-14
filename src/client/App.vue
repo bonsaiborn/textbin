@@ -1919,21 +1919,29 @@ onBeforeUnmount(() => {
         >
           Admin Panel
         </button>
-        <button
-          class="action-button rounded-xl border px-3 py-2 text-sm transition"
-          :class="state.currentView === 'account' ? 'surface-note-active' : 'surface-soft'"
-          :style="{ color: 'var(--vp-c-text-1)' }"
-          @click="openAccountSettings('sessions')"
-        >
-          Account
-        </button>
         <div class="flex w-full min-w-0 gap-2">
           <button
-            class="surface-soft action-button danger-button min-w-0 flex-1 rounded-xl border px-3 py-2 text-sm transition"
+            class="action-button inline-flex min-w-0 flex-1 items-center justify-center rounded-xl border px-3 py-2 text-sm transition"
+            :class="state.currentView === 'account' ? 'surface-note-active' : 'surface-soft'"
             :style="{ color: 'var(--vp-c-text-1)' }"
+            aria-label="Account settings"
+            title="Account settings"
+            @click="openAccountSettings('sessions')"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22" fill="none" aria-hidden="true">
+              <path fill="currentColor" d="M9 3h4v1h1v1h1v4h-1v1h-1v1H9v-1H8V9H7V5h1V4h1zm1 5v1h2V8h1V6h-1V5h-2v1H9v2zm-3 4h8v1h2v1h1v1h1v4H3v-4h1v-1h1v-1h2zm-1 4H5v1h12v-1h-1v-1h-2v-1H8v1H6z"/>
+            </svg>
+          </button>
+          <button
+            class="surface-soft action-button danger-button inline-flex min-w-0 flex-1 items-center justify-center rounded-xl border px-3 py-2 text-sm transition"
+            :style="{ color: 'var(--vp-c-text-1)' }"
+            aria-label="Log out"
+            title="Log out"
             @click="logout"
           >
-            Log out
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path fill="currentColor" d="M3 21V3h9v2H5v14h7v2zm13-4l-1.375-1.45l2.55-2.55H9v-2h8.175l-2.55-2.55L16 7l5 5z"/>
+            </svg>
           </button>
         </div>
       </div>
@@ -1947,11 +1955,25 @@ onBeforeUnmount(() => {
           </div>
           <div class="flex items-center gap-2">
             <button
-              class="surface-soft action-button danger-button rounded-xl border px-3 py-2 text-sm transition"
+              class="action-button rounded-xl border px-3 py-2 text-sm transition"
+              :class="state.currentView === 'account' ? 'surface-note-active' : 'surface-soft'"
               :style="{ color: 'var(--vp-c-text-1)' }"
+              aria-label="Account settings"
+              title="Account settings"
+              @click="openAccountSettings('sessions')"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M12 4a4 4 0 0 1 4 4a4 4 0 0 1-4 4a4 4 0 0 1-4-4a4 4 0 0 1 4-4m0 2a2 2 0 0 0-2 2a2 2 0 0 0 2 2a2 2 0 0 0 2-2a2 2 0 0 0-2-2m0 7c2.67 0 8 1.33 8 4v3H4v-3c0-2.67 5.33-4 8-4m0 1.9c-2.97 0-6.1 1.46-6.1 2.1v1.1h12.2V17c0-.64-3.13-2.1-6.1-2.1"/></svg>
+            </button>
+            <button
+              class="surface-soft action-button danger-button inline-flex items-center justify-center rounded-xl border px-3 py-2 text-sm transition"
+              :style="{ color: 'var(--vp-c-text-1)' }"
+              aria-label="Log out"
+              title="Log out"
               @click="logout"
             >
-              Log out
+              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path fill="currentColor" d="M3 21V3h9v2H5v14h7v2zm13-4l-1.375-1.45l2.55-2.55H9v-2h8.175l-2.55-2.55L16 7l5 5z"/>
+              </svg>
             </button>
           </div>
         </div>
@@ -1966,15 +1988,6 @@ onBeforeUnmount(() => {
           Admin Panel
         </button>
         <button
-          class="action-button mb-3 rounded-2xl border px-4 py-3 text-sm transition"
-          :class="state.currentView === 'account' ? 'surface-note-active' : 'surface-soft'"
-          :style="{ color: 'var(--vp-c-text-1)' }"
-          @click="openAccountSettings('sessions')"
-        >
-          Account
-        </button>
-
-        <button
           class="mb-4 rounded-2xl px-4 py-3 text-sm font-medium transition"
           :style="{ background: 'var(--accent)', color: 'var(--vp-c-bg)' }"
           @click="createNewNote"
@@ -1982,11 +1995,19 @@ onBeforeUnmount(() => {
           Create Note
         </button>
 
-        <label class="mb-4 block">
-          <span class="mb-2 block text-xs uppercase tracking-[0.25em]" :style="{ color: 'var(--vp-c-text-3)' }">Sort</span>
+        <label class="mb-4 relative block">
+          <span
+            class="pointer-events-none absolute left-3 top-1/2 inline-flex -translate-y-1/2 items-center justify-center"
+            :style="{ color: 'var(--vp-c-text-1)' }"
+            aria-hidden="true"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none">
+              <path fill="currentColor" d="M20 8v2h-1v1H5v-1H4V8h1V7h1V6h1V5h1V4h1V3h1V2h1V1h2v1h1v1h1v1h1v1h1v1h1v1h1v1zm0 6v2h-1v1h-1v1h-1v1h-1v1h-1v1h-1v1h-1v1h-2v-1h-1v-1H9v-1H8v-1H7v-1H6v-1H5v-1H4v-2h1v-1h14v1z"/>
+            </svg>
+          </span>
           <select
             v-model="state.sort"
-            class="surface-soft w-full rounded-2xl border px-3 py-3 text-sm outline-none transition"
+            class="surface-soft block w-full min-w-0 rounded-2xl border py-3 pl-12 pr-3 text-sm outline-none transition"
             :style="{ color: 'var(--vp-c-text-1)' }"
             @change="changeSort"
           >
@@ -2074,11 +2095,23 @@ onBeforeUnmount(() => {
             </button>
           </div>
 
-          <label class="block w-full min-w-0">
-            <span class="mb-2 block text-xs uppercase tracking-[0.25em]" :style="{ color: 'var(--vp-c-text-3)' }">Files</span>
+          <label class="relative block w-full min-w-0">
+            <span
+              class="pointer-events-none absolute left-3 top-1/2 inline-flex -translate-y-1/2 items-center justify-center"
+              :style="{ color: 'var(--vp-c-text-1)' }"
+              aria-hidden="true"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+                <path d="M0 0h48v48H0z" fill="none" />
+                <g fill="none" stroke="currentColor" stroke-linejoin="round" stroke-width="4">
+                  <path d="M8 6a2 2 0 0 1 2-2h20l10 10v28a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2z" />
+                  <path stroke-linecap="round" d="M16 20h16m-16 8h16" />
+                </g>
+              </svg>
+            </span>
             <select
               :value="state.selectedFilename"
-              class="surface-soft block w-full min-w-full max-w-none rounded-2xl border px-3 py-3 text-sm outline-none transition"
+              class="surface-soft block w-full min-w-0 rounded-2xl border py-3 pl-12 pr-3 text-sm outline-none transition"
               :style="{ color: 'var(--vp-c-text-1)' }"
               @change="
                 ($event) => {
@@ -2753,7 +2786,12 @@ onBeforeUnmount(() => {
           </div>
 
           <div v-else-if="!hasSelection" class="flex h-full items-center justify-center">
-            <p class="text-4xl font-light tracking-[0.3em]" :style="{ color: 'var(--vp-c-text-3)' }">Text it!</p>
+            <div class="flex items-center justify-center" :style="{ color: 'var(--vp-c-text-3)' }" aria-hidden="true">
+              <svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 24 24" fill="none">
+                <path d="M0 0h24v24H0z" fill="none" />
+                <path fill="currentColor" d="M3 21V3h18v8.7q-.475-.225-.975-.387T19 11.075V5H5v14h6.05q.075.55.238 1.05t.387.95zm2-3v1V5v6.075V11zm2-1h4.075q.075-.525.238-1.025t.362-.975H7zm0-4h6.1q.8-.75 1.788-1.25T17 11.075V11H7zm0-4h10V7H7zm11 14q-2.075 0-3.537-1.463T13 18t1.463-3.537T18 13t3.538 1.463T23 18t-1.463 3.538T18 23m-.5-2h1v-2.5H21v-1h-2.5V15h-1v2.5H15v1h2.5z" />
+              </svg>
+            </div>
           </div>
 
           <div v-else class="flex h-full flex-col">
