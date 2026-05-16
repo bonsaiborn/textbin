@@ -3,7 +3,8 @@ import { verify as argonVerify } from "@node-rs/argon2";
 import { config, defaultInstanceSettings } from "./config.js";
 import { getDb, getInstanceSettings } from "./db.js";
 import { getClientIp, hashPassword } from "./auth.js";
-import { createRevisionBackup, readNote, updateNote } from "./notes.js";
+import { readNote, saveNoteWithVersion } from "./notes.js";
+import { createRevisionSnapshot } from "./services/revisions.service.js";
 import type { ShareLinkKind, ShareRecord, ShareState, ShareSummary, UserRecord } from "./types.js";
 
 const MIN_READ_SLUG_LENGTH = 8;
@@ -517,6 +518,8 @@ export async function openPublicEdit(
 ): Promise<{
   filename?: string;
   content?: string;
+  version?: number;
+  updatedAt?: string;
   requiresPassword: boolean;
   expiresAt: string | null;
 }> {
@@ -541,6 +544,8 @@ export async function openPublicEdit(
   return {
     filename: note.filename,
     content: note.content,
+    version: note.version,
+    updatedAt: note.updatedAt,
     requiresPassword: false,
     expiresAt: share.expires_at
   };
@@ -548,24 +553,69 @@ export async function openPublicEdit(
 
 export async function savePublicEdit(
   slug: string,
-  content: string
-): Promise<{ filename: string; editCount: number }> {
+  content: string,
+  baseVersion: number
+): Promise<
+  | { ok: true; filename: string; editCount: number; version: number; updatedAt: string; ownerUsername: string; changed: boolean }
+  | { ok: false; serverVersion: number; serverContent: string; updatedAt: string }
+> {
   const share = getShareByEditSlug(slug);
   if (!share) {
     throw new Error("Share not found");
   }
 
   const owner = assertShareAccessible(share, "edit");
-  await createRevisionBackup(owner.username, share.filename);
-  await updateNote(owner.username, share.filename, content);
+  const current = await readNote(owner.username, share.filename);
+  const saveResult = await saveNoteWithVersion(owner.username, share.filename, content, baseVersion, {
+    beforeWrite: () => createRevisionSnapshot(owner.username, share.filename, current.version, current.content)
+  });
+  if (!saveResult.ok) {
+    return saveResult;
+  }
+  if (!saveResult.changed) {
+    return {
+      ok: true,
+      ownerUsername: owner.username,
+      filename: share.filename,
+      editCount: share.edit_count,
+      version: saveResult.version,
+      updatedAt: saveResult.updatedAt,
+      changed: false
+    };
+  }
   getDb()
     .prepare("UPDATE shares SET edit_count = edit_count + 1 WHERE id = ?")
     .run(share.id);
 
   const updated = getShareById(share.id)!;
   return {
+    ok: true,
+    ownerUsername: owner.username,
     filename: updated.filename,
-    editCount: updated.edit_count
+    editCount: updated.edit_count,
+    version: saveResult.version,
+    updatedAt: saveResult.updatedAt,
+    changed: true
+  };
+}
+
+export function resolvePublicEditTarget(
+  slug: string,
+  grantToken?: string
+): { username: string; filename: string } | "forbidden" | undefined {
+  const share = getShareByEditSlug(slug);
+  if (!share) {
+    return undefined;
+  }
+
+  const owner = assertShareAccessible(share, "edit");
+  if (share.password_hash && !hasPublicEditGrant(share, grantToken)) {
+    return "forbidden";
+  }
+
+  return {
+    username: owner.username,
+    filename: share.filename
   };
 }
 

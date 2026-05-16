@@ -1,44 +1,35 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { config } from "./config.js";
+import { deleteNoteMetadata, getOrCreateNoteMetadata, renameNoteMetadata, updateNoteMetadataVersion } from "./db.js";
 import type { NoteMeta, SortMode } from "./types.js";
-
-const FILENAME_RE = /^[a-z0-9_-]+\.txt$/;
-const USERNAME_RE = /^[a-z0-9_-]{3,64}$/;
+export { assertSafeFilename, assertSafeUsername, sanitizeTitleToFilename } from "./utils/filenames-core.js";
+import { assertSafeFilename, assertSafeUsername, sanitizeTitleToFilename } from "./utils/filenames-core.js";
 interface NoteMetaWithSortValues extends NoteMeta {
   createdMs: number;
   updatedMs: number;
 }
 
-export function sanitizeTitleToFilename(title: string): string {
-  const normalized = title
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, "-")
-    .replace(/[^a-z0-9_-]/g, "")
-    .replace(/-+/g, "-")
-    .replace(/_+/g, "_")
-    .replace(/^[-_]+|[-_]+$/g, "");
+const noteSaveLocks = new Map<string, Promise<void>>();
 
-  const base = normalized || "untitled";
-  return `${base}.txt`;
-}
+async function withNoteSaveLock<T>(username: string, filename: string, fn: () => Promise<T>): Promise<T> {
+  const key = `${username}:${filename}`;
+  const previous = noteSaveLocks.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const next = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const current = previous.then(() => next);
+  noteSaveLocks.set(key, current);
+  await previous;
 
-export function assertSafeFilename(filename: string): void {
-  if (
-    !filename ||
-    filename.includes("/") ||
-    filename.includes("\\") ||
-    filename.includes("..") ||
-    !FILENAME_RE.test(filename)
-  ) {
-    throw new Error("Invalid filename");
-  }
-}
-
-export function assertSafeUsername(username: string): void {
-  if (!USERNAME_RE.test(username)) {
-    throw new Error("Invalid username");
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (noteSaveLocks.get(key) === current) {
+      noteSaveLocks.delete(key);
+    }
   }
 }
 
@@ -96,6 +87,7 @@ async function statToMeta(username: string, filename: string): Promise<NoteMetaW
     ? stats.birthtimeMs
     : stats.mtimeMs;
   const updatedMs = stats.mtimeMs;
+  const metadata = getOrCreateNoteMetadata(username, filename, new Date(createdMs).toISOString(), new Date(updatedMs).toISOString());
 
   return {
     filename,
@@ -103,6 +95,7 @@ async function statToMeta(username: string, filename: string): Promise<NoteMetaW
     sizeBytes: stats.size,
     createdAt: new Date(createdMs).toISOString(),
     updatedAt: new Date(updatedMs).toISOString(),
+    version: metadata.version,
     createdMs,
     updatedMs
   };
@@ -143,10 +136,11 @@ export async function createNote(username: string, title: string, content: strin
   return statToMeta(username, filename);
 }
 
-export async function readNote(username: string, filename: string): Promise<{ filename: string; content: string }> {
+export async function readNote(username: string, filename: string): Promise<{ filename: string; content: string; version: number; updatedAt: string }> {
   const fullPath = resolveNotePath(username, filename);
   const content = await fs.readFile(fullPath, "utf8");
-  return { filename, content };
+  const meta = await statToMeta(username, filename);
+  return { filename, content, version: meta.version, updatedAt: meta.updatedAt };
 }
 
 export async function updateNote(username: string, filename: string, content: string): Promise<void> {
@@ -154,14 +148,43 @@ export async function updateNote(username: string, filename: string, content: st
   await fs.writeFile(resolveNotePath(username, filename), content, "utf8");
 }
 
-export async function createRevisionBackup(username: string, filename: string): Promise<void> {
-  const sourcePath = resolveNotePath(username, filename);
-  const backupsDir = path.join(resolveUserNotesDir(username), ".revisions");
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const backupFilename = `${filename}.${timestamp}.bak`;
+export async function saveNoteWithVersion(
+  username: string,
+  filename: string,
+  content: string,
+  baseVersion: number,
+  options?: { beforeWrite?: () => Promise<void> | void }
+): Promise<
+  | { ok: true; version: number; updatedAt: string; changed: boolean }
+  | { ok: false; serverVersion: number; serverContent: string; updatedAt: string }
+> {
+  enforceNoteSize(content);
+  return withNoteSaveLock(username, filename, async () => {
+    const current = await readNote(username, filename);
+    if (current.version !== baseVersion) {
+      return {
+        ok: false,
+        serverVersion: current.version,
+        serverContent: current.content,
+        updatedAt: current.updatedAt
+      };
+    }
 
-  await fs.mkdir(backupsDir, { recursive: true });
-  await fs.copyFile(sourcePath, path.join(backupsDir, backupFilename));
+    if (current.content === content) {
+      return {
+        ok: true,
+        version: current.version,
+        updatedAt: current.updatedAt,
+        changed: false
+      };
+    }
+
+    await options?.beforeWrite?.();
+    await fs.writeFile(resolveNotePath(username, filename), content, "utf8");
+    const updatedAt = new Date().toISOString();
+    const version = updateNoteMetadataVersion(username, filename, current.version + 1, updatedAt);
+    return { ok: true, version, updatedAt, changed: true };
+  });
 }
 
 export async function renameNote(username: string, filename: string, title: string): Promise<NoteMeta> {
@@ -170,11 +193,13 @@ export async function renameNote(username: string, filename: string, title: stri
     return statToMeta(username, filename);
   }
   await fs.rename(resolveNotePath(username, filename), resolveNotePath(username, nextFilename));
+  renameNoteMetadata(username, filename, nextFilename);
   return statToMeta(username, nextFilename);
 }
 
 export async function deleteNote(username: string, filename: string): Promise<void> {
   await fs.unlink(resolveNotePath(username, filename));
+  deleteNoteMetadata(username, filename);
 }
 
 export async function getDownloadPayload(username: string, filename: string): Promise<{ content: string; path: string }> {

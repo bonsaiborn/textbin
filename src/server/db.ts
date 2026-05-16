@@ -3,8 +3,8 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { hash } from "@node-rs/argon2";
 import { config, defaultInstanceSettings } from "./config.js";
-import { assertSafeUsername, sanitizeTitleToFilename } from "./notes.js";
-import type { InstanceSettings, UserRecord, UserRole } from "./types.js";
+import { assertSafeUsername, sanitizeTitleToFilename } from "./utils/filenames-core.js";
+import type { InstanceSettings, NoteMetadataRecord, UserRecord, UserRole } from "./types.js";
 
 let dbInstance: Database.Database | undefined;
 
@@ -42,6 +42,48 @@ function ensureSchemaMigrations(db: Database.Database): void {
   if (!hasColumn(db, "sessions", "last_used_at")) {
     db.exec(`ALTER TABLE sessions ADD COLUMN last_used_at TEXT`);
     db.exec(`UPDATE sessions SET last_used_at = created_at WHERE last_used_at IS NULL`);
+  }
+}
+
+function ensureNoteMetadataSchema(db: Database.Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS note_metadata (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL,
+      filename TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      updated_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE(username, filename)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_note_metadata_username_filename
+    ON note_metadata (username, filename);
+  `);
+}
+
+function ensureNoteRevisionsSchema(db: Database.Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS note_revisions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL,
+      filename TEXT NOT NULL,
+      note_version INTEGER NOT NULL,
+      revision_path TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE(username, filename, note_version)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_note_revisions_username_filename_version
+    ON note_revisions (username, filename, note_version DESC);
+  `);
+}
+
+export function closeDb(): void {
+  if (dbInstance) {
+    dbInstance.close();
+    dbInstance = undefined;
   }
 }
 
@@ -126,7 +168,8 @@ function ensureSettingsTable(db: Database.Database): void {
     ["defaultTheme", defaultInstanceSettings.defaultTheme],
     ["defaultReadSlugLength", String(defaultInstanceSettings.defaultReadSlugLength)],
     ["defaultEditSlugLength", String(defaultInstanceSettings.defaultEditSlugLength)],
-    ["shareCharset", defaultInstanceSettings.shareCharset]
+    ["shareCharset", defaultInstanceSettings.shareCharset],
+    ["maxNoteRevisions", String(defaultInstanceSettings.maxNoteRevisions)]
   ];
 
   const statement = db.prepare(
@@ -279,6 +322,8 @@ export async function initializeDatabase(): Promise<void> {
   `);
   ensureSchemaMigrations(db);
   ensureSharesSchema(db);
+  ensureNoteMetadataSchema(db);
+  ensureNoteRevisionsSchema(db);
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_shares_user_id
     ON shares (user_id);
@@ -343,6 +388,10 @@ export function getInstanceSettings(): InstanceSettings {
   const db = getDb();
   const rows = db.prepare("SELECT key, value FROM settings").all() as Array<{ key: keyof InstanceSettings; value: string }>;
   const map = new Map(rows.map((row) => [row.key, row.value]));
+  const parsedMaxNoteRevisions = Number.parseInt(
+    map.get("maxNoteRevisions") ?? String(defaultInstanceSettings.maxNoteRevisions),
+    10
+  );
 
   return {
     defaultTheme:
@@ -359,8 +408,66 @@ export function getInstanceSettings(): InstanceSettings {
       map.get("defaultEditSlugLength") ?? String(defaultInstanceSettings.defaultEditSlugLength),
       10
     ),
-    shareCharset: map.get("shareCharset") ?? defaultInstanceSettings.shareCharset
+    shareCharset: map.get("shareCharset") ?? defaultInstanceSettings.shareCharset,
+    maxNoteRevisions: Math.min(
+      500,
+      Math.max(
+        0,
+        Number.isFinite(parsedMaxNoteRevisions) ? parsedMaxNoteRevisions : defaultInstanceSettings.maxNoteRevisions
+      )
+    )
   };
+}
+
+export function getNoteMetadata(username: string, filename: string): NoteMetadataRecord | undefined {
+  return getDb()
+    .prepare("SELECT * FROM note_metadata WHERE username = ? AND filename = ?")
+    .get(username, filename) as NoteMetadataRecord | undefined;
+}
+
+export function getOrCreateNoteMetadata(username: string, filename: string, createdAt: string, updatedAt: string): NoteMetadataRecord {
+  const existing = getNoteMetadata(username, filename);
+  if (existing) {
+    return existing;
+  }
+
+  getDb()
+    .prepare(
+      `INSERT INTO note_metadata (username, filename, version, updated_at, created_at)
+       VALUES (?, ?, 1, ?, ?)`
+    )
+    .run(username, filename, updatedAt, createdAt);
+
+  return getNoteMetadata(username, filename)!;
+}
+
+export function createNoteMetadata(username: string, filename: string, createdAt: string, updatedAt: string, version = 1): NoteMetadataRecord {
+  getDb()
+    .prepare(
+      `INSERT INTO note_metadata (username, filename, version, updated_at, created_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(username, filename) DO UPDATE SET version = excluded.version, updated_at = excluded.updated_at`
+    )
+    .run(username, filename, version, updatedAt, createdAt);
+  return getNoteMetadata(username, filename)!;
+}
+
+export function updateNoteMetadataVersion(username: string, filename: string, version: number, updatedAt: string): number {
+  const existing = getOrCreateNoteMetadata(username, filename, updatedAt, updatedAt);
+  getDb()
+    .prepare("UPDATE note_metadata SET version = ?, updated_at = ? WHERE id = ?")
+    .run(version, updatedAt, existing.id);
+  return version;
+}
+
+export function renameNoteMetadata(username: string, oldFilename: string, newFilename: string): void {
+  getDb()
+    .prepare("UPDATE note_metadata SET filename = ? WHERE username = ? AND filename = ?")
+    .run(newFilename, username, oldFilename);
+}
+
+export function deleteNoteMetadata(username: string, filename: string): void {
+  getDb().prepare("DELETE FROM note_metadata WHERE username = ? AND filename = ?").run(username, filename);
 }
 
 export function updateInstanceSettings(next: InstanceSettings): InstanceSettings {
@@ -376,5 +483,6 @@ export function updateInstanceSettings(next: InstanceSettings): InstanceSettings
   statement.run("defaultReadSlugLength", String(next.defaultReadSlugLength), now);
   statement.run("defaultEditSlugLength", String(next.defaultEditSlugLength), now);
   statement.run("shareCharset", next.shareCharset, now);
+  statement.run("maxNoteRevisions", String(next.maxNoteRevisions), now);
   return getInstanceSettings();
 }

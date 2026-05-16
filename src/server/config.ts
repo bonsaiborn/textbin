@@ -71,5 +71,6 @@ export const defaultInstanceSettings: InstanceSettings = {
   defaultTheme: "dark",
   defaultReadSlugLength: 8,
   defaultEditSlugLength: 16,
-  shareCharset: "abcdefghijklmnopqrstuvwxyz0123456789"
+  shareCharset: "abcdefghijklmnopqrstuvwxyz0123456789",
+  maxNoteRevisions: 20
 };
