@@ -18,6 +18,7 @@ interface NoteMeta {
   sizeBytes: number;
   createdAt: string;
   updatedAt: string;
+  version: number;
   ownerUsername?: string;
 }
 
@@ -26,6 +27,7 @@ interface InstanceSettings {
   defaultReadSlugLength: number;
   defaultEditSlugLength: number;
   shareCharset: string;
+  maxNoteRevisions: number;
 }
 
 interface UserResponse {
@@ -82,6 +84,17 @@ interface AdminSessionSummary extends SessionSummary {
   userId: number;
 }
 
+interface NoteRevisionSummary {
+  id: number;
+  version: number;
+  sizeBytes: number;
+  createdAt: string;
+}
+
+interface NoteRevisionDetail extends NoteRevisionSummary {
+  content: string;
+}
+
 const state = reactive({
   ready: false,
   authenticated: false,
@@ -98,9 +111,17 @@ const state = reactive({
   selectedFilename: "",
   editorTitle: "",
   editorContent: "",
+  editorVersion: 0,
   editorFontSize: 14,
   isDirty: false,
   feedback: "",
+  noteRemoteUpdatePending: false,
+  noteRemoteVersion: 0,
+  noteRemoteUpdatedAt: "",
+  noteConflict: false,
+  noteConflictServerVersion: 0,
+  noteConflictServerContent: "",
+  noteConflictUpdatedAt: "",
   isCreatingNew: false,
   contextMenuFilename: "",
   contextMenuOpen: false,
@@ -115,7 +136,8 @@ const state = reactive({
     defaultTheme: "dark",
     defaultReadSlugLength: 8,
     defaultEditSlugLength: 16,
-    shareCharset: "abcdefghijklmnopqrstuvwxyz0123456789"
+    shareCharset: "abcdefghijklmnopqrstuvwxyz0123456789",
+    maxNoteRevisions: 20
   } as InstanceSettings,
   shareLoading: false,
   shareSaving: false,
@@ -132,7 +154,19 @@ const state = reactive({
   shareExpirationUnit: "days" as ExpirationUnit,
   shareViewCount: 0,
   shareEditCount: 0,
+  shareNotice: "",
+  shareNoticeTone: "success" as "success" | "danger",
   sharePanelOpen: false,
+  historyPanelOpen: false,
+  historyLoading: false,
+  historyClearing: false,
+  historyRestoring: false,
+  historyError: "",
+  historySuccess: "",
+  historyItems: [] as NoteRevisionSummary[],
+  historySelectedRevision: null as NoteRevisionDetail | null,
+  historyPreviewLoading: false,
+  historyPreviewRevisionId: 0,
   adminLoading: false,
   adminUsers: [] as AdminUserSummary[],
   adminUsersFilter: "all" as UserFilter,
@@ -144,6 +178,7 @@ const state = reactive({
   adminSessionsUsername: "all",
   adminSessions: [] as AdminSessionSummary[],
   adminSettingsSaving: false,
+  adminSettingsSuccess: "",
   adminCreateUsername: "",
   adminCreatePassword: "",
   adminCreateRole: "user" as UserRole,
@@ -166,17 +201,43 @@ const state = reactive({
   publicEditSlug: "",
   publicEditFilename: "",
   publicEditContent: "",
+  publicEditDirty: false,
   publicEditPassword: "",
   publicEditGrant: "",
+  publicEditVersion: 0,
   publicEditRequiresPassword: false,
   publicEditLoading: false,
   publicEditSaving: false,
   publicEditError: "",
-  publicEditSuccess: ""
+  publicEditSuccess: "",
+  publicEditRemoteUpdatePending: false,
+  publicEditRemoteVersion: 0,
+  publicEditRemoteUpdatedAt: "",
+  publicEditConflict: false,
+  publicEditConflictServerVersion: 0,
+  publicEditConflictServerContent: "",
+  publicEditConflictUpdatedAt: ""
 });
 
 let autosaveTimer: number | undefined;
+let shareNoticeTimer: number | undefined;
 const editorTextarea = ref<HTMLTextAreaElement | null>(null);
+let noteEvents: EventSource | undefined;
+let publicEditEvents: EventSource | undefined;
+let noteEventsReconnectTimer: number | undefined;
+let publicEditEventsReconnectTimer: number | undefined;
+
+class ApiError extends Error {
+  status: number;
+  data: unknown;
+
+  constructor(message: string, status: number, data: unknown) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.data = data;
+  }
+}
 
 const selectedNote = computed(() =>
   state.notes.find((note) => note.filename === state.selectedFilename)
@@ -239,6 +300,17 @@ const shareRemainingText = computed(() => {
   const totalDays = Math.ceil(totalHours / 24);
   return `${totalDays}d left`;
 });
+const sharePasswordWarningText = computed(() => {
+  if (!(state.shareReadUrlPath || state.shareEditUrlPath) || !state.shareHasExistingPassword) {
+    return "";
+  }
+
+  return state.shareMode === "edit"
+    ? "This edit link now requires a password."
+    : "This public link now requires a password.";
+});
+const shareStatusText = computed(() => state.shareNotice || sharePasswordWarningText.value);
+const shareStatusIsSuccess = computed(() => state.shareNotice ? state.shareNoticeTone === "success" : false);
 const publicStatusText = computed(() => {
   if (state.shareMode === "edit" && state.shareEditUrlPath) {
     return shareRemainingText.value ? `Edit link active • ${shareRemainingText.value}` : "Edit link active";
@@ -304,7 +376,7 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
     const payload = (await response.json().catch(() => ({ message: "Request failed" }))) as {
       message?: string;
     };
-    throw new Error(payload.message || "Request failed");
+    throw new ApiError(payload.message || "Request failed", response.status, payload);
   }
 
   if (response.headers.get("Content-Type")?.includes("application/json")) {
@@ -312,6 +384,47 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
   }
 
   return undefined as T;
+}
+
+function disconnectNoteEvents() {
+  noteEvents?.close();
+  noteEvents = undefined;
+  if (noteEventsReconnectTimer) {
+    window.clearTimeout(noteEventsReconnectTimer);
+    noteEventsReconnectTimer = undefined;
+  }
+}
+
+function disconnectPublicEditEvents() {
+  publicEditEvents?.close();
+  publicEditEvents = undefined;
+  if (publicEditEventsReconnectTimer) {
+    window.clearTimeout(publicEditEventsReconnectTimer);
+    publicEditEventsReconnectTimer = undefined;
+  }
+}
+
+function clearNoteSyncState() {
+  state.editorVersion = 0;
+  state.noteRemoteUpdatePending = false;
+  state.noteRemoteVersion = 0;
+  state.noteRemoteUpdatedAt = "";
+  state.noteConflict = false;
+  state.noteConflictServerVersion = 0;
+  state.noteConflictServerContent = "";
+  state.noteConflictUpdatedAt = "";
+}
+
+function clearPublicEditSyncState() {
+  state.publicEditVersion = 0;
+  state.publicEditDirty = false;
+  state.publicEditRemoteUpdatePending = false;
+  state.publicEditRemoteVersion = 0;
+  state.publicEditRemoteUpdatedAt = "";
+  state.publicEditConflict = false;
+  state.publicEditConflictServerVersion = 0;
+  state.publicEditConflictServerContent = "";
+  state.publicEditConflictUpdatedAt = "";
 }
 
 function formatDate(value: string): string {
@@ -471,6 +584,21 @@ function handleEditorKeyZoom(event: KeyboardEvent) {
   }
 }
 
+function handleGlobalEscape(event: KeyboardEvent) {
+  if (event.key !== "Escape") {
+    return;
+  }
+
+  if (state.sharePanelOpen) {
+    closeSharePanel();
+    return;
+  }
+
+  if (state.historyPanelOpen) {
+    state.historyPanelOpen = false;
+  }
+}
+
 function getCookieValue(name: string): string {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = document.cookie.match(new RegExp(`(?:^|; )${escaped}=([^;]*)`));
@@ -540,7 +668,12 @@ function resolveThemeSetting(theme: ThemeSetting): ThemeMode {
   return theme;
 }
 
-function clearShareState() {
+function clearShareState(options?: { preservePanelOpen?: boolean }) {
+  const preservePanelOpen = options?.preservePanelOpen ?? false;
+  if (shareNoticeTimer) {
+    window.clearTimeout(shareNoticeTimer);
+    shareNoticeTimer = undefined;
+  }
   state.shareLoading = false;
   state.shareSaving = false;
   state.shareMode = "read";
@@ -555,6 +688,45 @@ function clearShareState() {
   state.shareExpirationUnit = "days";
   state.shareViewCount = 0;
   state.shareEditCount = 0;
+  state.shareNotice = "";
+  state.shareNoticeTone = "success";
+  state.sharePanelOpen = preservePanelOpen ? state.sharePanelOpen : false;
+}
+
+function clearHistoryState() {
+  state.historyPanelOpen = false;
+  state.historyLoading = false;
+  state.historyClearing = false;
+  state.historyRestoring = false;
+  state.historyError = "";
+  state.historySuccess = "";
+  state.historyItems = [];
+  state.historySelectedRevision = null;
+  state.historyPreviewLoading = false;
+  state.historyPreviewRevisionId = 0;
+}
+
+function showShareNotice(message: string, tone: "success" | "danger" = "success") {
+  if (shareNoticeTimer) {
+    window.clearTimeout(shareNoticeTimer);
+  }
+  state.shareNotice = message;
+  state.shareNoticeTone = tone;
+  shareNoticeTimer = window.setTimeout(() => {
+    if (state.shareNotice === message) {
+      state.shareNotice = "";
+      state.shareNoticeTone = "success";
+    }
+    shareNoticeTimer = undefined;
+  }, 2200);
+}
+
+function closeSharePanel() {
+  if (shareNoticeTimer) {
+    window.clearTimeout(shareNoticeTimer);
+    shareNoticeTimer = undefined;
+  }
+  state.shareNotice = "";
   state.sharePanelOpen = false;
 }
 
@@ -599,10 +771,13 @@ function resetEditorState() {
   state.selectedFilename = "";
   state.editorTitle = "";
   state.editorContent = "";
+  clearNoteSyncState();
+  disconnectNoteEvents();
   state.isCreatingNew = false;
   state.isDirty = false;
   state.feedback = "";
   clearShareState();
+  clearHistoryState();
 }
 
 function closeCurrentNote() {
@@ -630,6 +805,8 @@ function clearAuthState() {
   state.accountPasswordConfirm = "";
   state.adminUserSessions = [];
   state.adminUserSessionsTarget = "";
+  disconnectPublicEditEvents();
+  disconnectNoteEvents();
   resetEditorState();
 }
 
@@ -643,6 +820,182 @@ async function loadInstanceSettings() {
 async function loadUserShares() {
   const payload = await api<{ shares: ShareSummary[] }>("/api/shares");
   state.userShares = payload.shares;
+}
+
+async function loadNoteHistory(options?: { preservePreview?: boolean; filename?: string }) {
+  const targetFilename = options?.filename ?? state.selectedFilename;
+  if (!targetFilename) {
+    clearHistoryState();
+    return;
+  }
+
+  state.historyLoading = true;
+  state.historyError = "";
+  try {
+    const payload = await api<{ revisions: NoteRevisionSummary[] }>(`/api/notes/${encodeURIComponent(targetFilename)}/revisions`);
+    if (state.selectedFilename !== targetFilename) {
+      return;
+    }
+    state.historyItems = payload.revisions;
+    if (!options?.preservePreview) {
+      state.historySelectedRevision = null;
+    } else if (
+      state.historySelectedRevision &&
+      !payload.revisions.some((revision) => revision.id === state.historySelectedRevision?.id)
+    ) {
+      state.historySelectedRevision = null;
+    }
+  } catch (error) {
+    state.historyError = error instanceof Error ? error.message : "Could not load version history";
+  } finally {
+    state.historyLoading = false;
+  }
+}
+
+async function previewRevision(revisionId: number) {
+  if (!state.selectedFilename) {
+    return;
+  }
+  if (state.historyPreviewLoading || state.historyRestoring) {
+    return;
+  }
+
+  state.historyPreviewLoading = true;
+  state.historyPreviewRevisionId = revisionId;
+  state.historyError = "";
+  try {
+    const payload = await api<NoteRevisionDetail>(
+      `/api/notes/${encodeURIComponent(state.selectedFilename)}/revisions/${revisionId}`
+    );
+    state.historySelectedRevision = payload;
+  } catch (error) {
+    state.historyError = error instanceof Error ? error.message : "Could not load revision";
+  } finally {
+    state.historyPreviewLoading = false;
+    state.historyPreviewRevisionId = 0;
+  }
+}
+
+async function toggleHistoryPanel() {
+  if (!canOperateOnSavedNote.value) {
+    return;
+  }
+  state.historyPanelOpen = !state.historyPanelOpen;
+  if (state.historyPanelOpen) {
+    await loadNoteHistory();
+  }
+}
+
+async function toggleSharePanel() {
+  if (!canOperateOnSavedNote.value) {
+    return;
+  }
+
+  state.sharePanelOpen = !state.sharePanelOpen;
+  if (state.sharePanelOpen && state.selectedFilename) {
+    await loadShareForFilename(state.selectedFilename);
+  }
+}
+
+async function restoreRevision(revision: NoteRevisionSummary) {
+  if (!state.selectedFilename) {
+    return;
+  }
+  if (state.historyRestoring || state.historyPreviewLoading) {
+    return;
+  }
+
+  const confirmationText = state.isDirty
+    ? "Restore this version?\n\nYou have unsaved local changes in the editor. Those local changes will be lost and are not saved to version history until you save this note."
+    : "Restore this version?\n\nYour current note will be replaced, but a backup of the current content will be saved if history is enabled.";
+  const confirmed = window.confirm(
+    confirmationText
+  );
+  if (!confirmed) {
+    return;
+  }
+
+  state.historyRestoring = true;
+  state.historyError = "";
+  state.historySuccess = "";
+  try {
+    const payload = await api<{ success: true; version: number; updatedAt: string; content: string }>(
+      `/api/notes/${encodeURIComponent(state.selectedFilename)}/revisions/${revision.id}/restore`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          baseVersion: state.editorVersion
+        })
+      }
+    );
+    state.editorContent = payload.content;
+    state.editorVersion = payload.version;
+    state.isDirty = false;
+    state.noteRemoteUpdatePending = false;
+    state.noteConflict = false;
+    state.feedback = "Revision restored";
+    state.historySuccess = "Revision restored";
+    const existing = selectedNote.value;
+    if (existing) {
+      upsertLocalNote({
+        ...existing,
+        updatedAt: payload.updatedAt,
+        version: payload.version
+      });
+    }
+    await loadNoteHistory();
+    state.historySelectedRevision = null;
+    await loadShareForFilename(state.selectedFilename);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 409) {
+      const payload = error.data as {
+        error?: string;
+        serverVersion?: number;
+        serverContent?: string;
+        updatedAt?: string;
+        message?: string;
+      };
+      if (payload.error === "VERSION_CONFLICT") {
+        state.noteConflict = true;
+        state.noteConflictServerVersion = payload.serverVersion ?? 0;
+        state.noteConflictServerContent = payload.serverContent ?? "";
+        state.noteConflictUpdatedAt = payload.updatedAt ?? "";
+        state.noteRemoteUpdatePending = true;
+        state.historyError = payload.message ?? "This note was updated elsewhere.";
+        return;
+      }
+    }
+    state.historyError = error instanceof Error ? error.message : "Could not restore revision";
+  } finally {
+    state.historyRestoring = false;
+  }
+}
+
+async function clearNoteHistory() {
+  if (!state.selectedFilename) {
+    return;
+  }
+
+  const confirmed = window.confirm("Clear version history for this note?");
+  if (!confirmed) {
+    return;
+  }
+
+  state.historyClearing = true;
+  state.historyError = "";
+  state.historySuccess = "";
+  try {
+    await api(`/api/notes/${encodeURIComponent(state.selectedFilename)}/revisions`, {
+      method: "DELETE"
+    });
+    state.historyItems = [];
+    state.historySelectedRevision = null;
+    state.historySuccess = "Version history cleared";
+  } catch (error) {
+    state.historyError = error instanceof Error ? error.message : "Could not clear version history";
+  } finally {
+    state.historyClearing = false;
+  }
 }
 
 async function loadMySessions() {
@@ -703,7 +1056,7 @@ async function loadPublicEdit() {
   state.publicEditSuccess = "";
   try {
     const headers = state.publicEditGrant ? { "X-Public-Edit-Grant": state.publicEditGrant } : undefined;
-    const payload = await api<{ filename?: string; content?: string; requiresPassword: boolean }>(
+    const payload = await api<{ filename?: string; content?: string; requiresPassword: boolean; version?: number; updatedAt?: string }>(
       `/api/public/edit/${encodeURIComponent(state.publicEditSlug)}`,
       {
         headers
@@ -716,6 +1069,12 @@ async function loadPublicEdit() {
     if (payload.requiresPassword) {
       state.publicEditGrant = "";
       state.publicEditPassword = "";
+      clearPublicEditSyncState();
+      disconnectPublicEditEvents();
+    } else {
+      clearPublicEditSyncState();
+      state.publicEditVersion = payload.version ?? 1;
+      connectPublicEditEvents();
     }
     document.title = payload.requiresPassword
       ? "Protected Editable TextBin Note"
@@ -724,6 +1083,8 @@ async function loadPublicEdit() {
     state.publicEditError = error instanceof Error ? error.message : "Could not load editable note";
     state.publicEditContent = "";
     state.publicEditGrant = "";
+    clearPublicEditSyncState();
+    disconnectPublicEditEvents();
   } finally {
     state.publicEditLoading = false;
     state.ready = true;
@@ -803,16 +1164,20 @@ async function logout() {
 }
 
 async function loadShareForFilename(filename: string) {
+  const preservePanelOpen = state.sharePanelOpen;
   if (!filename) {
-    clearShareState();
+    clearShareState({ preservePanelOpen });
     return;
   }
 
   state.shareLoading = true;
   try {
     const payload = await api<{ share: ShareSummary | null }>(`/api/shares/${encodeURIComponent(filename)}`);
+    if (state.selectedFilename !== filename) {
+      return;
+    }
     if (!payload.share) {
-      clearShareState();
+      clearShareState({ preservePanelOpen });
       return;
     }
 
@@ -826,7 +1191,7 @@ async function loadShareForFilename(filename: string) {
     applyExpirationFromIso(payload.share.expiresAt);
     state.shareViewCount = payload.share.viewCount;
     state.shareEditCount = payload.share.editCount;
-    state.sharePanelOpen = false;
+    state.sharePanelOpen = preservePanelOpen;
   } finally {
     state.shareLoading = false;
   }
@@ -838,29 +1203,43 @@ async function openNote(filename: string) {
     return;
   }
 
-  const payload = await api<{ filename: string; content: string }>(`/api/notes/${encodeURIComponent(filename)}`);
+  const payload = await api<{ filename: string; content: string; version: number; updatedAt: string }>(`/api/notes/${encodeURIComponent(filename)}`);
   state.currentView = "editor";
   state.selectedFilename = payload.filename;
   updateDocumentTitle();
+  clearNoteSyncState();
   state.editorTitle = payload.filename.replace(/\.txt$/i, "");
   state.editorContent = payload.content;
+  state.editorVersion = payload.version;
   state.isCreatingNew = false;
   state.isDirty = false;
   state.feedback = "";
   closeContextMenu();
-  await loadShareForFilename(payload.filename);
+  connectNoteEvents(payload.filename);
+  void loadShareForFilename(payload.filename);
+  if (state.historyPanelOpen) {
+    void loadNoteHistory({ filename: payload.filename });
+  } else {
+    state.historyItems = [];
+    state.historySelectedRevision = null;
+    state.historyError = "";
+    state.historySuccess = "";
+  }
 }
 
 function createNewNote() {
+  disconnectNoteEvents();
   closeContextMenu();
   state.currentView = "editor";
   state.selectedFilename = "";
   state.editorTitle = "";
   state.editorContent = "";
+  clearNoteSyncState();
   state.isCreatingNew = true;
   state.isDirty = false;
   state.feedback = "";
   clearShareState();
+  clearHistoryState();
   updateDocumentTitle();
 }
 
@@ -883,23 +1262,33 @@ async function saveNote() {
         })
       });
       state.selectedFilename = created.filename;
+      state.editorVersion = created.version;
       state.isCreatingNew = false;
       upsertLocalNote(created);
+      connectNoteEvents(created.filename);
+      if (state.historyPanelOpen) {
+        await loadNoteHistory();
+      }
     } else {
       const previousDisplayName = selectedNote.value?.displayName;
-      await api(`/api/notes/${encodeURIComponent(state.selectedFilename)}`, {
+      const updateResult = await api<{ success: true; version: number; updatedAt: string }>(`/api/notes/${encodeURIComponent(state.selectedFilename)}`, {
         method: "PUT",
         body: JSON.stringify({
-          content: state.editorContent
+          content: state.editorContent,
+          baseVersion: state.editorVersion
         })
       });
+      state.editorVersion = updateResult.version;
+      state.noteRemoteUpdatePending = false;
+      state.noteConflict = false;
 
       const existing = selectedNote.value;
       if (existing) {
         upsertLocalNote({
           ...existing,
           displayName: trimmedTitle,
-          updatedAt: new Date().toISOString()
+          updatedAt: updateResult.updatedAt,
+          version: updateResult.version
         });
       }
 
@@ -912,6 +1301,8 @@ async function saveNote() {
         });
         upsertLocalNote(renamed, state.selectedFilename);
         state.selectedFilename = renamed.filename;
+        state.editorVersion = renamed.version;
+        connectNoteEvents(renamed.filename);
       }
     }
 
@@ -920,7 +1311,30 @@ async function saveNote() {
     state.feedback = "Saved";
     if (state.selectedFilename) {
       await loadShareForFilename(state.selectedFilename);
+      if (state.historyPanelOpen) {
+        await loadNoteHistory({ preservePreview: true });
+      }
     }
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 409) {
+      const payload = error.data as {
+        error?: string;
+        serverVersion?: number;
+        serverContent?: string;
+        updatedAt?: string;
+        message?: string;
+      };
+      if (payload.error === "VERSION_CONFLICT") {
+        state.noteConflict = true;
+        state.noteConflictServerVersion = payload.serverVersion ?? 0;
+        state.noteConflictServerContent = payload.serverContent ?? "";
+        state.noteConflictUpdatedAt = payload.updatedAt ?? "";
+        state.noteRemoteUpdatePending = true;
+        state.feedback = payload.message ?? "This note was updated elsewhere.";
+        return;
+      }
+    }
+    throw error;
   } finally {
     state.saving = false;
   }
@@ -972,12 +1386,16 @@ async function saveShareForCurrentNote() {
       state.shareViewCount = payload.share.viewCount;
       state.shareEditCount = payload.share.editCount;
       state.sharePassword = "";
-      state.feedback = "Share settings saved";
+      state.feedback = "";
+      showShareNotice("Share settings saved");
     } else {
       clearShareState();
-      state.feedback = "Share disabled";
+      state.feedback = "";
     }
     await loadUserShares();
+  } catch (error) {
+    state.feedback = "";
+    showShareNotice(error instanceof Error ? error.message : "Could not save share settings", "danger");
   } finally {
     state.shareSaving = false;
   }
@@ -991,7 +1409,8 @@ async function disableShareForCurrentNote() {
   await api(`/api/shares/${encodeURIComponent(state.selectedFilename)}`, { method: "DELETE" });
   clearShareState();
   await loadUserShares();
-  state.feedback = "Share removed";
+  state.feedback = "";
+  showShareNotice("Share removed");
 }
 
 async function deleteOwnShare(share: ShareSummary) {
@@ -1174,19 +1593,45 @@ async function savePublicEditContent() {
   state.publicEditSuccess = "";
   try {
     const headers = state.publicEditGrant ? { "X-Public-Edit-Grant": state.publicEditGrant } : undefined;
-    const payload = await api<{ success: boolean; filename: string; editCount: number }>(
+    const payload = await api<{ success: boolean; filename: string; editCount: number; version: number; updatedAt: string }>(
       `/api/public/edit/${encodeURIComponent(state.publicEditSlug)}`,
       {
         method: "PUT",
         headers,
         body: JSON.stringify({
-          content: state.publicEditContent
+          content: state.publicEditContent,
+          baseVersion: state.publicEditVersion
         })
       }
     );
     state.publicEditFilename = payload.filename;
+    state.publicEditVersion = payload.version;
+    state.publicEditDirty = false;
+    state.publicEditRemoteUpdatePending = false;
+    state.publicEditConflict = false;
+    state.publicEditConflictServerVersion = 0;
+    state.publicEditConflictServerContent = "";
+    state.publicEditConflictUpdatedAt = "";
     state.publicEditSuccess = "Changes were saved";
   } catch (error) {
+    if (error instanceof ApiError && error.status === 409) {
+      const payload = error.data as {
+        error?: string;
+        serverVersion?: number;
+        serverContent?: string;
+        updatedAt?: string;
+        message?: string;
+      };
+      if (payload.error === "VERSION_CONFLICT") {
+        state.publicEditConflict = true;
+        state.publicEditConflictServerVersion = payload.serverVersion ?? 0;
+        state.publicEditConflictServerContent = payload.serverContent ?? "";
+        state.publicEditConflictUpdatedAt = payload.updatedAt ?? "";
+        state.publicEditRemoteUpdatePending = true;
+        state.publicEditError = payload.message ?? "This note was updated elsewhere.";
+        return;
+      }
+    }
     state.publicEditError = error instanceof Error ? error.message : "Could not save note";
   } finally {
     state.publicEditSaving = false;
@@ -1210,25 +1655,152 @@ function scheduleAutosave() {
     state.saving = true;
     state.feedback = "Autosaving...";
     try {
-      await api(`/api/notes/${encodeURIComponent(state.selectedFilename)}`, {
+      const updateResult = await api<{ success: true; version: number; updatedAt: string }>(`/api/notes/${encodeURIComponent(state.selectedFilename)}`, {
         method: "PUT",
         body: JSON.stringify({
-          content: state.editorContent
+          content: state.editorContent,
+          baseVersion: state.editorVersion
         })
       });
+      state.editorVersion = updateResult.version;
+      state.noteRemoteUpdatePending = false;
+      state.noteConflict = false;
       const existing = selectedNote.value;
       if (existing) {
         upsertLocalNote({
           ...existing,
-          updatedAt: new Date().toISOString()
+          updatedAt: updateResult.updatedAt,
+          version: updateResult.version
         });
       }
       state.isDirty = false;
       state.feedback = "Saved automatically";
+      if (state.historyPanelOpen) {
+        await loadNoteHistory({ preservePreview: true });
+      }
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
+        const payload = error.data as {
+          error?: string;
+          serverVersion?: number;
+          serverContent?: string;
+          updatedAt?: string;
+          message?: string;
+        };
+        if (payload.error === "VERSION_CONFLICT") {
+          state.noteConflict = true;
+          state.noteConflictServerVersion = payload.serverVersion ?? 0;
+          state.noteConflictServerContent = payload.serverContent ?? "";
+          state.noteConflictUpdatedAt = payload.updatedAt ?? "";
+          state.noteRemoteUpdatePending = true;
+          state.isDirty = true;
+          state.feedback = payload.message ?? "This note was updated elsewhere.";
+          return;
+        }
+      }
+      throw error;
     } finally {
       state.saving = false;
     }
   }, 1200);
+}
+
+async function reloadRemoteVersion() {
+  if (!state.selectedFilename) {
+    return;
+  }
+  await openNote(state.selectedFilename);
+  state.feedback = "Reloaded remote version";
+}
+
+function keepLocalChanges() {
+  state.noteRemoteUpdatePending = false;
+  state.feedback = "Keeping local changes";
+}
+
+async function reloadRemotePublicEditVersion() {
+  await loadPublicEdit();
+  state.publicEditSuccess = "";
+  state.publicEditError = "";
+  state.publicEditRemoteUpdatePending = false;
+  state.publicEditConflict = false;
+  state.publicEditConflictServerVersion = 0;
+  state.publicEditConflictServerContent = "";
+  state.publicEditConflictUpdatedAt = "";
+  state.publicEditSuccess = "Reloaded remote version";
+}
+
+function keepLocalPublicEditChanges() {
+  state.publicEditRemoteUpdatePending = false;
+  state.publicEditSuccess = "";
+  state.publicEditError = "Keeping local changes";
+}
+
+function connectNoteEvents(filename: string) {
+  disconnectNoteEvents();
+  noteEvents = new EventSource(`/api/notes/${encodeURIComponent(filename)}/events`, { withCredentials: true });
+  noteEvents.onmessage = (event) => {
+    const payload = JSON.parse(event.data) as { type: string; filename: string; version: number; updatedAt: string };
+    if (payload.type !== "note-updated" || payload.filename !== state.selectedFilename || payload.version <= state.editorVersion) {
+      return;
+    }
+    state.noteRemoteVersion = payload.version;
+    state.noteRemoteUpdatedAt = payload.updatedAt;
+    if (state.isDirty) {
+      state.noteRemoteUpdatePending = true;
+      return;
+    }
+    void reloadRemoteVersion();
+  };
+  noteEvents.onerror = () => {
+    noteEvents?.close();
+    noteEvents = undefined;
+    if (noteEventsReconnectTimer) {
+      window.clearTimeout(noteEventsReconnectTimer);
+    }
+    noteEventsReconnectTimer = window.setTimeout(() => {
+      if (state.selectedFilename === filename && state.authenticated && state.currentView === "editor") {
+        connectNoteEvents(filename);
+      }
+    }, 3000);
+  };
+}
+
+function connectPublicEditEvents() {
+  disconnectPublicEditEvents();
+  if (!state.publicEditSlug || (state.publicEditRequiresPassword && !state.publicEditGrant)) {
+    return;
+  }
+  const url = new URL(`/api/public/edit/${encodeURIComponent(state.publicEditSlug)}/events`, window.location.origin);
+  if (state.publicEditGrant) {
+    url.searchParams.set("grantToken", state.publicEditGrant);
+  }
+  publicEditEvents = new EventSource(url.toString(), { withCredentials: true });
+  publicEditEvents.onmessage = (event) => {
+    const payload = JSON.parse(event.data) as { type: string; version: number; updatedAt: string };
+    if (payload.type !== "note-updated" || payload.version <= state.publicEditVersion) {
+      return;
+    }
+    state.publicEditRemoteVersion = payload.version;
+    state.publicEditRemoteUpdatedAt = payload.updatedAt;
+    if (state.publicEditDirty) {
+      state.publicEditRemoteUpdatePending = true;
+      return;
+    }
+    void reloadRemotePublicEditVersion();
+  };
+  publicEditEvents.onerror = () => {
+    publicEditEvents?.close();
+    publicEditEvents = undefined;
+    if (publicEditEventsReconnectTimer) {
+      window.clearTimeout(publicEditEventsReconnectTimer);
+    }
+    publicEditEventsReconnectTimer = window.setTimeout(() => {
+      if (state.publicEditSlug && (!state.publicEditRequiresPassword || Boolean(state.publicEditGrant))) {
+        connectPublicEditEvents();
+      }
+    }, 3000);
+  };
 }
 
 async function toggleDotMenu(event: MouseEvent, filename: string) {
@@ -1663,6 +2235,7 @@ async function adminDeleteNote(note: NoteMeta) {
 
 async function saveAdminSettings() {
   state.adminSettingsSaving = true;
+  state.adminSettingsSuccess = "";
   try {
     const payload = await api<{ settings: InstanceSettings }>("/api/admin/settings", {
       method: "PUT",
@@ -1670,6 +2243,12 @@ async function saveAdminSettings() {
     });
     state.settings = payload.settings;
     state.feedback = "Settings saved";
+    state.adminSettingsSuccess = "Settings saved";
+    window.setTimeout(() => {
+      if (state.adminSettingsSuccess === "Settings saved") {
+        state.adminSettingsSuccess = "";
+      }
+    }, 2200);
   } finally {
     state.adminSettingsSaving = false;
   }
@@ -1711,6 +2290,8 @@ onMounted(() => {
   document.addEventListener("mousewheel", handleLegacyEditorWheel as EventListener, { passive: false, capture: true });
   window.addEventListener("keydown", handleEditorKeyZoom as EventListener, true);
   document.addEventListener("keydown", handleEditorKeyZoom as EventListener, true);
+  window.addEventListener("keydown", handleGlobalEscape as EventListener, true);
+  document.addEventListener("keydown", handleGlobalEscape as EventListener, true);
 });
 
 watch(
@@ -1734,6 +2315,8 @@ onBeforeUnmount(() => {
   document.removeEventListener("mousewheel", handleLegacyEditorWheel as EventListener, true);
   window.removeEventListener("keydown", handleEditorKeyZoom as EventListener, true);
   document.removeEventListener("keydown", handleEditorKeyZoom as EventListener, true);
+  window.removeEventListener("keydown", handleGlobalEscape as EventListener, true);
+  document.removeEventListener("keydown", handleGlobalEscape as EventListener, true);
   window.removeEventListener("click", onBackgroundClick);
 });
 </script>
@@ -1831,12 +2414,38 @@ onBeforeUnmount(() => {
 
         <div v-else>
           <p v-if="state.publicEditError" class="mb-4 text-sm" :style="{ color: 'var(--danger)' }">{{ state.publicEditError }}</p>
+          <div
+            v-if="state.publicEditRemoteUpdatePending"
+            class="mb-4 rounded-2xl border px-4 py-3 text-sm"
+            :style="{ borderColor: 'var(--danger)', background: 'var(--panel-muted)' }"
+          >
+            <p :style="{ color: 'var(--danger)' }">
+              {{ state.publicEditConflict ? "Your changes were not saved because this note was updated elsewhere." : "This note was updated on another device." }}
+            </p>
+            <p v-if="state.publicEditRemoteUpdatedAt || state.publicEditConflictUpdatedAt" class="mt-2 text-xs" :style="{ color: 'var(--vp-c-text-2)' }">
+              Remote version:
+              {{ state.publicEditConflict ? state.publicEditConflictServerVersion : state.publicEditRemoteVersion }}
+              • Updated:
+              {{ formatDate(state.publicEditConflict ? state.publicEditConflictUpdatedAt : state.publicEditRemoteUpdatedAt) }}
+            </p>
+            <div class="mt-3 flex flex-wrap gap-2">
+              <button class="surface-soft action-button rounded-xl border px-3 py-2 text-sm transition" @click="reloadRemotePublicEditVersion">
+                Reload remote version
+              </button>
+              <button class="surface-soft action-button rounded-xl border px-3 py-2 text-sm transition" @click="keepLocalPublicEditChanges">
+                Keep local changes
+              </button>
+            </div>
+          </div>
           <textarea
             v-model="state.publicEditContent"
             class="surface-soft retro-editor-area min-h-[60vh] w-full resize-none rounded-3xl border p-5 text-sm leading-7 outline-none"
             :style="{ color: 'var(--vp-c-text-1)' }"
             spellcheck="false"
-            @input="state.publicEditSuccess = ''"
+            @input="
+              state.publicEditDirty = true;
+              state.publicEditSuccess = '';
+            "
           />
           <div class="mt-4 flex items-center justify-between gap-4">
             <p v-if="state.publicEditSuccess" class="retro-success-text text-sm" :style="{ color: 'var(--vp-c-green-2)' }">{{ state.publicEditSuccess }}</p>
@@ -1844,7 +2453,7 @@ onBeforeUnmount(() => {
             <button
               class="rounded-2xl px-4 py-3 text-sm font-medium transition disabled:opacity-70"
               :style="{ background: 'var(--accent)', color: 'var(--vp-c-bg)' }"
-              :disabled="state.publicEditSaving"
+              :disabled="state.publicEditSaving || !state.publicEditDirty"
               @click="savePublicEditContent"
             >
               {{ state.publicEditSaving ? "Saving..." : "Save changes" }}
@@ -2560,6 +3169,20 @@ onBeforeUnmount(() => {
                       />
                     </label>
 
+                    <label class="block">
+                      <span class="mb-2 block text-sm" :style="{ color: 'var(--vp-c-text-2)' }">Max saved revisions per note</span>
+                      <input
+                        v-model.number="state.settings.maxNoteRevisions"
+                        type="number"
+                        min="0"
+                        max="500"
+                        class="surface-soft w-full rounded-2xl border px-4 py-3 text-sm outline-none"
+                      />
+                      <span class="mt-2 block text-xs leading-5" :style="{ color: 'var(--vp-c-text-2)' }">
+                        Set how many previous copies are kept for each note. Use 0 to disable version history.
+                      </span>
+                    </label>
+
                     <button
                       class="rounded-2xl px-4 py-3 text-sm font-medium transition"
                       :style="{ background: 'var(--accent)', color: 'var(--vp-c-bg)' }"
@@ -2568,6 +3191,11 @@ onBeforeUnmount(() => {
                     >
                       Save settings
                     </button>
+                    <Transition name="retro-fade">
+                      <p v-if="state.adminSettingsSuccess" class="text-sm retro-success-text" :style="{ color: 'var(--vp-c-green-2)' }">
+                        {{ state.adminSettingsSuccess }}
+                      </p>
+                    </Transition>
                   </div>
                 </div>
 
@@ -2831,6 +3459,14 @@ onBeforeUnmount(() => {
                   Delete
                 </button>
                 <button
+                  class="surface-soft action-button hidden rounded-2xl border px-4 py-3 text-sm transition disabled:cursor-not-allowed disabled:opacity-70 lg:inline-flex"
+                  :style="{ color: 'var(--vp-c-text-1)' }"
+                  :disabled="!canOperateOnSavedNote"
+                  @click="toggleHistoryPanel"
+                >
+                  History
+                </button>
+                <button
                   class="surface-soft action-button hidden rounded-2xl border px-4 py-3 text-sm transition lg:inline-flex"
                   :style="{ color: 'var(--vp-c-text-1)' }"
                   @click="closeCurrentNote"
@@ -2852,134 +3488,9 @@ onBeforeUnmount(() => {
                   <button
                     class="action-button rounded-xl border px-3 py-2 text-xs transition"
                     :class="state.sharePanelOpen ? 'surface-note-active' : 'surface-soft'"
-                    @click="state.sharePanelOpen = !state.sharePanelOpen"
+                    @click="toggleSharePanel"
                   >
                     Settings
-                  </button>
-                </div>
-              </div>
-
-              <div v-if="state.sharePanelOpen" class="space-y-4">
-                <div class="grid gap-4 lg:grid-cols-2">
-                  <label class="block">
-                    <span class="mb-2 block text-sm" :style="{ color: 'var(--vp-c-text-2)' }">Share state</span>
-                    <select
-                      v-model="state.shareMode"
-                      class="surface-soft w-full rounded-2xl border px-4 py-3 text-sm outline-none"
-                      :disabled="!canOperateOnSavedNote"
-                      @change="handleShareModeChange"
-                    >
-                      <option value="read">read only</option>
-                      <option value="edit">edit only</option>
-                    </select>
-                  </label>
-
-                  <label class="block">
-                    <span class="mb-2 block text-sm" :style="{ color: 'var(--vp-c-text-2)' }">Generated URL</span>
-                    <input
-                      :value="activeShareUrl"
-                      type="text"
-                      readonly
-                      placeholder="Will appear after save"
-                      class="surface-soft w-full rounded-2xl border px-4 py-3 text-sm outline-none"
-                      :disabled="!canOperateOnSavedNote"
-                    />
-                  </label>
-                </div>
-
-                <label class="block">
-                  <span class="mb-2 block text-sm" :style="{ color: 'var(--vp-c-text-2)' }">Custom URL slug</span>
-                  <input
-                    v-model="state.shareSlugInput"
-                    type="text"
-                    :placeholder="isEditMode ? 'custom edit slug (optional)' : 'custom read slug (optional)'"
-                    class="surface-soft w-full rounded-2xl border px-4 py-3 text-sm outline-none"
-                    :disabled="!canOperateOnSavedNote"
-                  />
-                </label>
-
-                <p v-if="isEditMode" class="text-sm" :style="{ color: 'var(--danger)' }">
-                  Anyone with this link can edit this note.
-                </p>
-
-                <div class="grid gap-4 lg:grid-cols-2">
-                  <div>
-                    <label class="mb-3 flex items-center gap-2 text-sm">
-                      <input
-                        v-model="state.sharePasswordEnabled"
-                        class="toggle-input"
-                        type="checkbox"
-                        :class="{ 'cursor-not-allowed': !canOperateOnSavedNote }"
-                        :disabled="!canOperateOnSavedNote"
-                      />
-                      <span>Enable password protection</span>
-                    </label>
-                    <input
-                      v-model="state.sharePassword"
-                      type="password"
-                      placeholder="share password"
-                      class="surface-soft w-full rounded-2xl border px-4 py-3 text-sm outline-none"
-                      :disabled="!state.sharePasswordEnabled || !canOperateOnSavedNote"
-                    />
-                    <p v-if="state.shareHasExistingPassword" class="mt-2 text-xs" :style="{ color: 'var(--vp-c-text-2)' }">
-                      A password is already set. Leave the field empty to keep it unchanged.
-                    </p>
-                  </div>
-
-                  <div class="grid grid-cols-[minmax(0,1fr)_160px] gap-3">
-                    <label class="block">
-                      <span class="mb-2 block text-sm" :style="{ color: 'var(--vp-c-text-2)' }">Expiration</span>
-                      <input
-                        v-model="state.shareExpirationAmount"
-                        type="number"
-                        min="1"
-                        placeholder="leave empty for none"
-                        class="surface-soft w-full rounded-2xl border px-4 py-3 text-sm outline-none"
-                        :disabled="!canOperateOnSavedNote"
-                      />
-                    </label>
-                    <label class="block">
-                      <span class="mb-2 block text-sm" :style="{ color: 'var(--vp-c-text-2)' }">Unit</span>
-                      <select
-                        v-model="state.shareExpirationUnit"
-                        class="surface-soft w-full rounded-2xl border px-4 py-3 text-sm outline-none"
-                        :disabled="!canOperateOnSavedNote"
-                      >
-                        <option value="minutes">minutes</option>
-                        <option value="hours">hours</option>
-                        <option value="days">days</option>
-                      </select>
-                    </label>
-                  </div>
-                </div>
-
-                <div class="grid gap-3 text-xs sm:grid-cols-2" :style="{ color: 'var(--vp-c-text-2)' }">
-                  <div class="stat-card rounded-2xl px-3 py-2">
-                    <p class="uppercase tracking-[0.2em]">View count</p>
-                    <p class="mt-1 text-[13px]" :style="{ color: 'var(--vp-c-text-1)' }">{{ state.shareViewCount }}</p>
-                  </div>
-                  <div class="stat-card rounded-2xl px-3 py-2">
-                    <p class="uppercase tracking-[0.2em]">Edit count</p>
-                    <p class="mt-1 text-[13px]" :style="{ color: 'var(--vp-c-text-1)' }">{{ state.shareEditCount }}</p>
-                  </div>
-                </div>
-
-                <div class="flex flex-wrap gap-2">
-                  <button
-                    class="rounded-2xl px-4 py-3 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-70"
-                    :style="{ background: 'var(--accent)', color: 'var(--vp-c-bg)' }"
-                    :disabled="!canOperateOnSavedNote || state.shareSaving || state.shareLoading"
-                    @click="saveShareForCurrentNote"
-                  >
-                    Save share
-                  </button>
-                  <button
-                    class="danger-button rounded-2xl border px-4 py-3 text-sm transition disabled:cursor-not-allowed disabled:opacity-70"
-                    :style="{ color: 'var(--danger)', borderColor: 'var(--danger)' }"
-                    :disabled="!canOperateOnSavedNote || !hasAnyActiveShare"
-                    @click="disableShareForCurrentNote"
-                  >
-                    Disable share
                   </button>
                 </div>
               </div>
@@ -2994,6 +3505,30 @@ onBeforeUnmount(() => {
               <span class="min-w-0 whitespace-normal break-words text-left leading-5 sm:flex-1 sm:text-right">{{ state.feedback || (state.isDirty ? "Unsaved changes" : "All changes saved") }}</span>
             </div>
 
+            <div
+              v-if="state.noteRemoteUpdatePending"
+              class="mb-3 rounded-2xl border px-4 py-3 text-sm"
+              :style="{ borderColor: 'var(--danger)', background: 'var(--panel-muted)' }"
+            >
+              <p :style="{ color: 'var(--danger)' }">
+                {{ state.noteConflict ? "Your changes were not saved because this note was updated elsewhere." : "This note was updated on another device." }}
+              </p>
+              <p v-if="state.noteRemoteUpdatedAt || state.noteConflictUpdatedAt" class="mt-2 text-xs" :style="{ color: 'var(--vp-c-text-2)' }">
+                Remote version:
+                {{ state.noteConflict ? state.noteConflictServerVersion : state.noteRemoteVersion }}
+                • Updated:
+                {{ formatDate(state.noteConflict ? state.noteConflictUpdatedAt : state.noteRemoteUpdatedAt) }}
+              </p>
+              <div class="mt-3 flex flex-wrap gap-2">
+                <button class="surface-soft action-button rounded-xl border px-3 py-2 text-sm transition" @click="reloadRemoteVersion">
+                  Reload remote version
+                </button>
+                <button class="surface-soft action-button rounded-xl border px-3 py-2 text-sm transition" @click="keepLocalChanges">
+                  Keep local changes
+                </button>
+              </div>
+            </div>
+
             <textarea
               ref="editorTextarea"
               v-model="state.editorContent"
@@ -3006,6 +3541,332 @@ onBeforeUnmount(() => {
               "
             />
           </div>
+
+          <Transition name="retro-modal">
+            <div
+              v-if="state.historyPanelOpen && canOperateOnSavedNote"
+              class="fixed inset-0 z-40 flex items-center justify-center p-3 sm:p-5"
+              :style="{ background: 'rgba(0, 0, 0, 0.46)' }"
+              @click.self="state.historyPanelOpen = false"
+            >
+              <div
+                class="glass-panel retro-window retro-history-modal flex max-h-[90vh] w-full min-w-0 flex-col overflow-hidden rounded-3xl p-4 sm:p-5"
+                data-window-title="VERSION HISTORY"
+              >
+                <div class="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p class="text-xs uppercase tracking-[0.25em]" :style="{ color: 'var(--vp-c-text-3)' }">Version history</p>
+                    <p class="mt-1 text-sm" :style="{ color: 'var(--vp-c-text-2)' }">
+                      Previous saved copies for this note.
+                    </p>
+                  </div>
+                  <div class="flex flex-wrap gap-2">
+                    <button
+                      class="surface-soft action-button rounded-xl border px-3 py-2 text-sm transition"
+                      @click="loadNoteHistory({ preservePreview: true })"
+                    >
+                      Refresh
+                    </button>
+                    <button
+                      class="danger-button rounded-xl border px-3 py-2 text-sm transition disabled:cursor-not-allowed disabled:opacity-70"
+                      :style="{ color: 'var(--danger)', borderColor: 'var(--danger)' }"
+                      :disabled="state.historyItems.length === 0 || state.historyClearing"
+                      @click="clearNoteHistory"
+                    >
+                      {{ state.historyClearing ? "Clearing..." : "Clear history" }}
+                    </button>
+                    <button
+                      class="surface-soft action-button rounded-xl border px-3 py-2 text-sm transition"
+                      @click="state.historyPanelOpen = false"
+                    >
+                      Close history
+                    </button>
+                  </div>
+                </div>
+
+                <Transition name="retro-fade">
+                  <p v-if="state.historyError" class="mb-3 text-sm" :style="{ color: 'var(--danger)' }">{{ state.historyError }}</p>
+                </Transition>
+                <Transition name="retro-fade">
+                  <p v-if="state.historySuccess" class="mb-3 text-sm retro-success-text" :style="{ color: 'var(--vp-c-green-2)' }">{{ state.historySuccess }}</p>
+                </Transition>
+
+                <div class="grid min-h-0 flex-1 gap-4 overflow-hidden xl:grid-cols-[minmax(0,360px)_minmax(0,1fr)]">
+                  <div class="min-h-0 space-y-3 overflow-y-auto pr-1">
+                    <div v-if="state.historyLoading" class="text-sm" :style="{ color: 'var(--vp-c-text-2)' }">
+                      Loading history...
+                    </div>
+                    <div
+                      v-else-if="state.historyItems.length === 0"
+                      class="surface-soft rounded-2xl border p-4 text-sm"
+                      :style="{ color: 'var(--vp-c-text-2)' }"
+                    >
+                      No saved revisions for this note.
+                    </div>
+                    <div
+                      v-for="revision in state.historyItems"
+                      :key="`revision-${revision.id}`"
+                      class="surface-soft rounded-2xl border p-4 transition retro-history-card"
+                      :class="state.historySelectedRevision?.id === revision.id ? 'surface-note-active' : ''"
+                    >
+                      <div class="flex flex-col gap-4">
+                        <div class="grid gap-3 text-xs md:grid-cols-3 xl:grid-cols-1" :style="{ color: 'var(--vp-c-text-2)' }">
+                          <div class="stat-card rounded-2xl px-3 py-2">
+                            <p class="uppercase tracking-[0.2em]">Version</p>
+                            <p class="mt-1 text-[13px]" :style="{ color: 'var(--vp-c-text-1)' }">{{ revision.version }}</p>
+                          </div>
+                          <div class="stat-card rounded-2xl px-3 py-2">
+                            <p class="uppercase tracking-[0.2em]">Saved</p>
+                            <p class="mt-1 text-[13px] break-words" :style="{ color: 'var(--vp-c-text-1)' }">{{ formatDate(revision.createdAt) }}</p>
+                          </div>
+                          <div class="stat-card rounded-2xl px-3 py-2">
+                            <p class="uppercase tracking-[0.2em]">Size</p>
+                            <p class="mt-1 text-[13px]" :style="{ color: 'var(--vp-c-text-1)' }">{{ revision.sizeBytes }} bytes</p>
+                          </div>
+                        </div>
+                        <div class="flex flex-wrap gap-2">
+                          <button
+                            class="surface-soft action-button rounded-xl border px-3 py-2 text-sm transition"
+                            :class="state.historySelectedRevision?.id === revision.id || state.historyPreviewRevisionId === revision.id ? 'surface-note-active' : ''"
+                            @click="previewRevision(revision.id)"
+                          >
+                            Preview
+                          </button>
+                          <button
+                            class="rounded-xl px-3 py-2 text-sm font-medium transition disabled:opacity-70"
+                            :style="{ background: 'var(--accent)', color: 'var(--vp-c-bg)' }"
+                            :disabled="state.historyRestoring"
+                            @click="restoreRevision(revision)"
+                          >
+                            {{ state.historyRestoring && state.historySelectedRevision?.id === revision.id ? "Restoring..." : "Restore" }}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="min-h-0 overflow-y-auto pr-1">
+                    <div class="retro-history-preview relative min-h-[420px] space-y-3">
+                      <Transition name="retro-fade">
+                        <div
+                          v-if="state.historyPreviewLoading"
+                          class="retro-history-overlay absolute inset-0 z-10 flex items-center justify-center text-sm"
+                          :style="{ color: 'var(--vp-c-text-2)' }"
+                        >
+                          Loading revision preview...
+                        </div>
+                      </Transition>
+                      <div
+                        v-if="!state.historySelectedRevision"
+                        class="surface-soft flex min-h-[420px] items-center justify-center rounded-2xl border p-4 text-sm transition"
+                        :style="{ color: 'var(--vp-c-text-2)' }"
+                      >
+                        Select a revision to preview it.
+                      </div>
+                      <div v-else class="space-y-3 transition">
+                      <div class="grid gap-3 text-xs md:grid-cols-3" :style="{ color: 'var(--vp-c-text-2)' }">
+                        <div class="stat-card rounded-2xl px-3 py-2">
+                          <p class="uppercase tracking-[0.2em]">Version</p>
+                          <p class="mt-1 text-[13px]" :style="{ color: 'var(--vp-c-text-1)' }">{{ state.historySelectedRevision.version }}</p>
+                        </div>
+                        <div class="stat-card rounded-2xl px-3 py-2">
+                          <p class="uppercase tracking-[0.2em]">Saved</p>
+                          <p class="mt-1 text-[13px] break-words" :style="{ color: 'var(--vp-c-text-1)' }">{{ formatDate(state.historySelectedRevision.createdAt) }}</p>
+                        </div>
+                        <div class="stat-card rounded-2xl px-3 py-2">
+                          <p class="uppercase tracking-[0.2em]">Size</p>
+                        <p class="mt-1 text-[13px]" :style="{ color: 'var(--vp-c-text-1)' }">{{ state.historySelectedRevision.sizeBytes }} bytes</p>
+                        </div>
+                      </div>
+                      <textarea
+                        :value="state.historySelectedRevision.content"
+                        readonly
+                        class="surface-soft retro-editor-area min-h-[340px] w-full resize-none rounded-3xl border p-5 text-sm leading-7 outline-none transition"
+                        :style="{ color: 'var(--vp-c-text-1)' }"
+                        spellcheck="false"
+                      />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </Transition>
+
+          <Transition name="retro-modal">
+            <div
+              v-if="state.sharePanelOpen && canOperateOnSavedNote"
+              class="fixed inset-0 z-40 flex items-center justify-center p-3 sm:p-5"
+              :style="{ background: 'rgba(0, 0, 0, 0.42)' }"
+              @click.self="closeSharePanel"
+            >
+              <div
+                class="glass-panel retro-window retro-share-modal flex max-h-[90vh] w-full min-w-0 flex-col overflow-hidden rounded-3xl p-4 sm:p-5"
+                data-window-title="PUBLIC LINK SETTINGS"
+              >
+                <div class="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p class="text-xs uppercase tracking-[0.25em]" :style="{ color: 'var(--vp-c-text-3)' }">Public link</p>
+                    <p class="mt-1 text-sm" :style="{ color: 'var(--vp-c-text-2)' }">
+                      Configure read-only and editable public links for this note.
+                    </p>
+                  </div>
+                  <div class="flex flex-wrap gap-2">
+                    <button
+                      class="surface-soft action-button rounded-xl border px-3 py-2 text-sm transition"
+                      @click="closeSharePanel"
+                    >
+                      Close settings
+                    </button>
+                  </div>
+                </div>
+
+                <div class="min-h-0 flex-1 overflow-y-auto pr-1 pb-[3px]">
+                  <div class="space-y-4">
+                    <div class="grid gap-4 lg:grid-cols-2">
+                      <label class="block">
+                        <span class="mb-2 block text-sm" :style="{ color: 'var(--vp-c-text-2)' }">Share state</span>
+                        <select
+                          v-model="state.shareMode"
+                          class="surface-soft w-full rounded-2xl border px-4 py-3 text-sm outline-none transition"
+                          :disabled="!canOperateOnSavedNote"
+                          @change="handleShareModeChange"
+                        >
+                          <option value="read">read only</option>
+                          <option value="edit">edit only</option>
+                        </select>
+                      </label>
+
+                      <label class="block">
+                        <span class="mb-2 block text-sm" :style="{ color: 'var(--vp-c-text-2)' }">Generated URL</span>
+                        <input
+                          :value="activeShareUrl"
+                          type="text"
+                          readonly
+                          placeholder="Will appear after save"
+                          class="surface-soft w-full rounded-2xl border px-4 py-3 text-sm outline-none transition"
+                          :disabled="!canOperateOnSavedNote"
+                        />
+                      </label>
+                    </div>
+
+                    <label class="block">
+                      <span class="mb-2 block text-sm" :style="{ color: 'var(--vp-c-text-2)' }">Custom URL slug</span>
+                      <input
+                        v-model="state.shareSlugInput"
+                        type="text"
+                        :placeholder="isEditMode ? 'custom edit slug (optional)' : 'custom read slug (optional)'"
+                        class="surface-soft w-full rounded-2xl border px-4 py-3 text-sm outline-none transition"
+                        :disabled="!canOperateOnSavedNote"
+                      />
+                    </label>
+
+                    <Transition name="retro-fade">
+                      <p v-if="isEditMode" class="text-sm" :style="{ color: 'var(--danger)' }">
+                        Anyone with this link can edit this note.
+                      </p>
+                    </Transition>
+
+                    <div class="grid gap-4 lg:grid-cols-2">
+                      <div>
+                        <label class="mb-3 flex items-center gap-2 text-sm transition">
+                          <input
+                            v-model="state.sharePasswordEnabled"
+                            class="toggle-input"
+                            type="checkbox"
+                            :class="{ 'cursor-not-allowed': !canOperateOnSavedNote }"
+                            :disabled="!canOperateOnSavedNote"
+                          />
+                          <span>Enable password protection</span>
+                        </label>
+                        <input
+                          v-model="state.sharePassword"
+                          type="password"
+                          placeholder="share password"
+                          class="surface-soft w-full rounded-2xl border px-4 py-3 text-sm outline-none transition"
+                          :disabled="!state.sharePasswordEnabled || !canOperateOnSavedNote"
+                        />
+                        <Transition name="retro-fade">
+                          <p v-if="state.shareHasExistingPassword" class="mt-2 text-xs" :style="{ color: 'var(--vp-c-text-2)' }">
+                            A password is already set. Leave the field empty to keep it unchanged.
+                          </p>
+                        </Transition>
+                      </div>
+
+                      <div class="grid grid-cols-[minmax(0,1fr)_160px] gap-3">
+                        <label class="block">
+                          <span class="mb-2 block text-sm" :style="{ color: 'var(--vp-c-text-2)' }">Expiration</span>
+                          <input
+                            v-model="state.shareExpirationAmount"
+                            type="number"
+                            min="1"
+                            placeholder="leave empty for none"
+                            class="surface-soft w-full rounded-2xl border px-4 py-3 text-sm outline-none transition"
+                            :disabled="!canOperateOnSavedNote"
+                          />
+                        </label>
+                        <label class="block">
+                          <span class="mb-2 block text-sm" :style="{ color: 'var(--vp-c-text-2)' }">Unit</span>
+                          <select
+                            v-model="state.shareExpirationUnit"
+                            class="surface-soft w-full rounded-2xl border px-4 py-3 text-sm outline-none transition"
+                            :disabled="!canOperateOnSavedNote"
+                          >
+                            <option value="minutes">minutes</option>
+                            <option value="hours">hours</option>
+                            <option value="days">days</option>
+                          </select>
+                        </label>
+                      </div>
+                    </div>
+
+                    <div class="grid gap-3 text-xs sm:grid-cols-2" :style="{ color: 'var(--vp-c-text-2)' }">
+                      <div class="stat-card rounded-2xl px-3 py-2 transition">
+                        <p class="uppercase tracking-[0.2em]">View count</p>
+                        <p class="mt-1 text-[13px]" :style="{ color: 'var(--vp-c-text-1)' }">{{ state.shareViewCount }}</p>
+                      </div>
+                      <div class="stat-card rounded-2xl px-3 py-2 transition">
+                        <p class="uppercase tracking-[0.2em]">Edit count</p>
+                        <p class="mt-1 text-[13px]" :style="{ color: 'var(--vp-c-text-1)' }">{{ state.shareEditCount }}</p>
+                      </div>
+                    </div>
+
+                    <div class="grid gap-2 pb-[2px] sm:grid-cols-[auto_minmax(0,1fr)] sm:items-center">
+                      <div class="flex min-h-[2.85rem] flex-wrap items-start gap-2">
+                        <button
+                          class="rounded-2xl px-4 py-3 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-70"
+                          :style="{ background: 'var(--accent)', color: 'var(--vp-c-bg)' }"
+                          :disabled="!canOperateOnSavedNote || state.shareSaving || state.shareLoading"
+                          @click="saveShareForCurrentNote"
+                        >
+                          Save share
+                        </button>
+                        <button
+                          class="danger-button rounded-2xl border px-4 py-3 text-sm transition disabled:cursor-not-allowed disabled:opacity-70"
+                          :style="{ color: 'var(--danger)', borderColor: 'var(--danger)' }"
+                          :disabled="!canOperateOnSavedNote || !hasAnyActiveShare"
+                          @click="disableShareForCurrentNote"
+                        >
+                          Disable share
+                        </button>
+                      </div>
+                      <div class="relative flex min-h-[2.85rem] items-center sm:min-w-[280px]">
+                        <Transition name="retro-fade">
+                          <p
+                            v-if="shareStatusText"
+                            class="absolute inset-y-0 left-0 right-0 flex items-center text-sm"
+                            :class="shareStatusIsSuccess ? 'retro-success-text' : 'retro-error-text'"
+                          >
+                            {{ shareStatusText }}
+                          </p>
+                        </Transition>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </Transition>
         </div>
       </main>
     </div>
@@ -3013,3 +3874,71 @@ onBeforeUnmount(() => {
 </template>
 
 <style src="./retro-theme.css"></style>
+<style>
+.retro-fade-enter-active,
+.retro-fade-leave-active {
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.retro-fade-enter-from,
+.retro-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+.retro-modal-enter-active,
+.retro-modal-leave-active {
+  transition: opacity 0.26s ease;
+}
+
+.retro-modal-enter-active .retro-history-modal,
+.retro-modal-leave-active .retro-history-modal,
+.retro-modal-enter-active .retro-share-modal,
+.retro-modal-leave-active .retro-share-modal {
+  transition: opacity 0.26s ease, transform 0.26s ease;
+}
+
+.retro-modal-enter-from,
+.retro-modal-leave-to {
+  opacity: 0;
+}
+
+.retro-modal-enter-from .retro-history-modal,
+.retro-modal-leave-to .retro-history-modal,
+.retro-modal-enter-from .retro-share-modal,
+.retro-modal-leave-to .retro-share-modal {
+  opacity: 0;
+  transform: translateY(-12px) scale(0.982);
+}
+
+.retro-history-preview {
+  transition: min-height 0.2s ease;
+}
+
+.retro-history-overlay {
+  background: rgba(195, 195, 195, 0.72);
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  backdrop-filter: blur(1px);
+}
+
+.retro-error-text {
+  color: var(--danger) !important;
+  font-weight: 700;
+  text-shadow: 1px 1px 0 rgba(255, 255, 255, 0.45);
+}
+
+.retro-history-card,
+.retro-history-preview > div,
+.retro-share-modal .stat-card,
+.retro-share-modal .surface-soft,
+.retro-share-modal label,
+.retro-history-modal .stat-card,
+.retro-history-modal .surface-soft {
+  transition:
+    background-color 0.16s ease,
+    border-color 0.16s ease,
+    box-shadow 0.16s ease,
+    opacity 0.16s ease,
+    transform 0.16s ease;
+}
+</style>

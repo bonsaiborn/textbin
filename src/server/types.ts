@@ -31,6 +31,26 @@ export interface NoteMeta {
   sizeBytes: number;
   createdAt: string;
   updatedAt: string;
+  version: number;
+}
+
+export interface NoteMetadataRecord {
+  id: number;
+  username: string;
+  filename: string;
+  version: number;
+  updated_at: string;
+  created_at: string;
+}
+
+export interface NoteRevisionRecord {
+  id: number;
+  username: string;
+  filename: string;
+  note_version: number;
+  revision_path: string;
+  size_bytes: number;
+  created_at: string;
 }
 
 export interface InstanceSettings {
@@ -38,6 +58,7 @@ export interface InstanceSettings {
   defaultReadSlugLength: number;
   defaultEditSlugLength: number;
   shareCharset: string;
+  maxNoteRevisions: number;
 }
 
 export interface UserSummary {

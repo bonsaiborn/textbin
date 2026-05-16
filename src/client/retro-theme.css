@@ -485,6 +485,14 @@ body {
   scrollbar-gutter: stable;
 }
 
+.retro-app .retro-history-modal {
+  width: min(94vw, 1480px);
+}
+
+.retro-app .retro-share-modal {
+  width: min(92vw, 1120px);
+}
+
 .retro-app .retro-share-panel {
   padding-top: 0.7rem !important;
 }
@@ -654,6 +662,11 @@ body {
 @media (max-width: 1023px) {
   .retro-app {
     font-size: 12px;
+  }
+
+  .retro-app .retro-history-modal,
+  .retro-app .retro-share-modal {
+    width: min(96vw, 96vw);
   }
 
   .retro-app .retro-window {
