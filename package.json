@@ -10,6 +10,8 @@
     "build": "npm run build:client && npm run build:server",
     "build:client": "vite build",
     "build:server": "tsc -p tsconfig.server.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "start": "node dist/server/index.js",
     "docker:build": "docker build -t textbin:test .",
     "docker:test": "docker run --rm -p 3003:3000 -e NODE_ENV=production -e APP_URL=http://localhost:3003 -e APP_SECRET=test_secret_123_change_me -e ADMIN_USERNAME=admin -e ADMIN_PASSWORD=change_me -e DB_FILENAME=/data/app.sqlite -e NOTES_DIR=/data/notes -e MAX_NOTE_SIZE=262144 -e COOKIE_SECURE=false -v textbin-test-data:/data textbin:test"
@@ -23,8 +25,8 @@
     "vue": "^3.5.33"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
     "@tailwindcss/postcss": "^4.2.4",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.6.0",
     "@vitejs/plugin-vue": "^6.0.6",
     "autoprefixer": "^10.5.0",
@@ -33,6 +35,7 @@
     "tailwindcss": "^4.2.4",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3",
-    "vite": "^8.0.10"
+    "vite": "^8.0.10",
+    "vitest": "^4.1.6"
   }
 }
