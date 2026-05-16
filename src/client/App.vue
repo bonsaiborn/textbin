@@ -106,6 +106,7 @@ const state = reactive({
   loginError: "",
   loadingNotes: false,
   saving: false,
+  manualSaving: false,
   sort: "created_desc" as SortMode,
   notes: [] as NoteMeta[],
   selectedFilename: "",
@@ -226,6 +227,8 @@ let noteEvents: EventSource | undefined;
 let publicEditEvents: EventSource | undefined;
 let noteEventsReconnectTimer: number | undefined;
 let publicEditEventsReconnectTimer: number | undefined;
+let expectedLocalNoteVersion = 0;
+let expectedLocalPublicEditVersion = 0;
 
 class ApiError extends Error {
   status: number;
@@ -413,6 +416,7 @@ function clearNoteSyncState() {
   state.noteConflictServerVersion = 0;
   state.noteConflictServerContent = "";
   state.noteConflictUpdatedAt = "";
+  expectedLocalNoteVersion = 0;
 }
 
 function clearPublicEditSyncState() {
@@ -425,6 +429,7 @@ function clearPublicEditSyncState() {
   state.publicEditConflictServerVersion = 0;
   state.publicEditConflictServerContent = "";
   state.publicEditConflictUpdatedAt = "";
+  expectedLocalPublicEditVersion = 0;
 }
 
 function formatDate(value: string): string {
@@ -1046,14 +1051,19 @@ async function loadPublicShare() {
   }
 }
 
-async function loadPublicEdit() {
+async function loadPublicEdit(options?: { silent?: boolean; preserveSuccess?: boolean }) {
   if (!state.publicEditSlug) {
     return;
   }
 
-  state.publicEditLoading = true;
+  const silent = options?.silent ?? false;
+  if (!silent) {
+    state.publicEditLoading = true;
+  }
   state.publicEditError = "";
-  state.publicEditSuccess = "";
+  if (!options?.preserveSuccess) {
+    state.publicEditSuccess = "";
+  }
   try {
     const headers = state.publicEditGrant ? { "X-Public-Edit-Grant": state.publicEditGrant } : undefined;
     const payload = await api<{ filename?: string; content?: string; requiresPassword: boolean; version?: number; updatedAt?: string }>(
@@ -1081,12 +1091,16 @@ async function loadPublicEdit() {
       : `${(payload.filename ?? "").replace(/\.txt$/i, "") || "Editable Text"} - TextBin`;
   } catch (error) {
     state.publicEditError = error instanceof Error ? error.message : "Could not load editable note";
-    state.publicEditContent = "";
-    state.publicEditGrant = "";
-    clearPublicEditSyncState();
-    disconnectPublicEditEvents();
+    if (!silent) {
+      state.publicEditContent = "";
+      state.publicEditGrant = "";
+      clearPublicEditSyncState();
+      disconnectPublicEditEvents();
+    }
   } finally {
-    state.publicEditLoading = false;
+    if (!silent) {
+      state.publicEditLoading = false;
+    }
     state.ready = true;
   }
 }
@@ -1244,13 +1258,17 @@ function createNewNote() {
 }
 
 async function saveNote() {
+  if (state.manualSaving || state.saving) {
+    return;
+  }
   const trimmedTitle = state.editorTitle.trim();
   if (!trimmedTitle) {
     state.feedback = "Filename is required";
     return;
   }
 
-  state.saving = true;
+  const targetFilename = state.selectedFilename;
+  state.manualSaving = true;
   state.feedback = "";
   try {
     if (state.isCreatingNew) {
@@ -1271,14 +1289,21 @@ async function saveNote() {
       }
     } else {
       const previousDisplayName = selectedNote.value?.displayName;
+      const requestBaseVersion = state.editorVersion;
+      expectedLocalNoteVersion = requestBaseVersion + 1;
       const updateResult = await api<{ success: true; version: number; updatedAt: string }>(`/api/notes/${encodeURIComponent(state.selectedFilename)}`, {
         method: "PUT",
         body: JSON.stringify({
           content: state.editorContent,
-          baseVersion: state.editorVersion
+          baseVersion: requestBaseVersion
         })
       });
+      if (state.selectedFilename !== targetFilename) {
+        expectedLocalNoteVersion = 0;
+        return;
+      }
       state.editorVersion = updateResult.version;
+      expectedLocalNoteVersion = 0;
       state.noteRemoteUpdatePending = false;
       state.noteConflict = false;
 
@@ -1299,6 +1324,9 @@ async function saveNote() {
             title: trimmedTitle
           })
         });
+        if (state.selectedFilename !== targetFilename) {
+          return;
+        }
         upsertLocalNote(renamed, state.selectedFilename);
         state.selectedFilename = renamed.filename;
         state.editorVersion = renamed.version;
@@ -1325,6 +1353,15 @@ async function saveNote() {
         message?: string;
       };
       if (payload.error === "VERSION_CONFLICT") {
+        if (state.selectedFilename !== targetFilename) {
+          expectedLocalNoteVersion = 0;
+          return;
+        }
+        if (state.editorVersion !== requestBaseVersion) {
+          expectedLocalNoteVersion = 0;
+          return;
+        }
+        expectedLocalNoteVersion = 0;
         state.noteConflict = true;
         state.noteConflictServerVersion = payload.serverVersion ?? 0;
         state.noteConflictServerContent = payload.serverContent ?? "";
@@ -1336,7 +1373,8 @@ async function saveNote() {
     }
     throw error;
   } finally {
-    state.saving = false;
+    state.manualSaving = false;
+    expectedLocalNoteVersion = 0;
   }
 }
 
@@ -1592,6 +1630,8 @@ async function savePublicEditContent() {
   state.publicEditError = "";
   state.publicEditSuccess = "";
   try {
+    const requestBaseVersion = state.publicEditVersion;
+    expectedLocalPublicEditVersion = requestBaseVersion + 1;
     const headers = state.publicEditGrant ? { "X-Public-Edit-Grant": state.publicEditGrant } : undefined;
     const payload = await api<{ success: boolean; filename: string; editCount: number; version: number; updatedAt: string }>(
       `/api/public/edit/${encodeURIComponent(state.publicEditSlug)}`,
@@ -1600,12 +1640,13 @@ async function savePublicEditContent() {
         headers,
         body: JSON.stringify({
           content: state.publicEditContent,
-          baseVersion: state.publicEditVersion
+          baseVersion: requestBaseVersion
         })
       }
     );
     state.publicEditFilename = payload.filename;
     state.publicEditVersion = payload.version;
+    expectedLocalPublicEditVersion = 0;
     state.publicEditDirty = false;
     state.publicEditRemoteUpdatePending = false;
     state.publicEditConflict = false;
@@ -1623,6 +1664,11 @@ async function savePublicEditContent() {
         message?: string;
       };
       if (payload.error === "VERSION_CONFLICT") {
+        if (state.publicEditVersion !== requestBaseVersion) {
+          expectedLocalPublicEditVersion = 0;
+          return;
+        }
+        expectedLocalPublicEditVersion = 0;
         state.publicEditConflict = true;
         state.publicEditConflictServerVersion = payload.serverVersion ?? 0;
         state.publicEditConflictServerContent = payload.serverContent ?? "";
@@ -1635,6 +1681,7 @@ async function savePublicEditContent() {
     state.publicEditError = error instanceof Error ? error.message : "Could not save note";
   } finally {
     state.publicEditSaving = false;
+    expectedLocalPublicEditVersion = 0;
   }
 }
 
@@ -1652,6 +1699,9 @@ function scheduleAutosave() {
       return;
     }
 
+    const targetFilename = state.selectedFilename;
+    const requestBaseVersion = state.editorVersion;
+    expectedLocalNoteVersion = requestBaseVersion + 1;
     state.saving = true;
     state.feedback = "Autosaving...";
     try {
@@ -1659,10 +1709,15 @@ function scheduleAutosave() {
         method: "PUT",
         body: JSON.stringify({
           content: state.editorContent,
-          baseVersion: state.editorVersion
+          baseVersion: requestBaseVersion
         })
       });
+      if (state.selectedFilename !== targetFilename) {
+        expectedLocalNoteVersion = 0;
+        return;
+      }
       state.editorVersion = updateResult.version;
+      expectedLocalNoteVersion = 0;
       state.noteRemoteUpdatePending = false;
       state.noteConflict = false;
       const existing = selectedNote.value;
@@ -1688,6 +1743,15 @@ function scheduleAutosave() {
           message?: string;
         };
         if (payload.error === "VERSION_CONFLICT") {
+          if (state.selectedFilename !== targetFilename) {
+            expectedLocalNoteVersion = 0;
+            return;
+          }
+          if (state.editorVersion !== requestBaseVersion) {
+            expectedLocalNoteVersion = 0;
+            return;
+          }
+          expectedLocalNoteVersion = 0;
           state.noteConflict = true;
           state.noteConflictServerVersion = payload.serverVersion ?? 0;
           state.noteConflictServerContent = payload.serverContent ?? "";
@@ -1701,6 +1765,7 @@ function scheduleAutosave() {
       throw error;
     } finally {
       state.saving = false;
+      expectedLocalNoteVersion = 0;
     }
   }, 1200);
 }
@@ -1709,21 +1774,56 @@ async function reloadRemoteVersion() {
   if (!state.selectedFilename) {
     return;
   }
-  await openNote(state.selectedFilename);
+  const payload = await api<{ filename: string; content: string; version: number; updatedAt: string }>(
+    `/api/notes/${encodeURIComponent(state.selectedFilename)}`
+  );
+  if (state.selectedFilename !== payload.filename) {
+    return;
+  }
+  state.editorTitle = payload.filename.replace(/\.txt$/i, "");
+  state.editorContent = payload.content;
+  state.editorVersion = payload.version;
+  state.isCreatingNew = false;
+  state.isDirty = false;
+  state.noteRemoteUpdatePending = false;
+  state.noteConflict = false;
+  state.noteRemoteVersion = 0;
+  state.noteRemoteUpdatedAt = "";
+  state.noteConflictServerVersion = 0;
+  state.noteConflictServerContent = "";
+  state.noteConflictUpdatedAt = "";
+  const existing = selectedNote.value;
+  if (existing) {
+    upsertLocalNote({
+      ...existing,
+      updatedAt: payload.updatedAt,
+      version: payload.version
+    });
+  }
+  void loadShareForFilename(payload.filename);
+  if (state.historyPanelOpen) {
+    void loadNoteHistory({ preservePreview: true, filename: payload.filename });
+  }
   state.feedback = "Reloaded remote version";
 }
 
 function keepLocalChanges() {
   state.noteRemoteUpdatePending = false;
+  state.noteConflict = false;
+  state.noteConflictServerVersion = 0;
+  state.noteConflictServerContent = "";
+  state.noteConflictUpdatedAt = "";
   state.feedback = "Keeping local changes";
 }
 
 async function reloadRemotePublicEditVersion() {
-  await loadPublicEdit();
+  await loadPublicEdit({ silent: true });
   state.publicEditSuccess = "";
   state.publicEditError = "";
   state.publicEditRemoteUpdatePending = false;
   state.publicEditConflict = false;
+  state.publicEditRemoteVersion = 0;
+  state.publicEditRemoteUpdatedAt = "";
   state.publicEditConflictServerVersion = 0;
   state.publicEditConflictServerContent = "";
   state.publicEditConflictUpdatedAt = "";
@@ -1732,6 +1832,10 @@ async function reloadRemotePublicEditVersion() {
 
 function keepLocalPublicEditChanges() {
   state.publicEditRemoteUpdatePending = false;
+  state.publicEditConflict = false;
+  state.publicEditConflictServerVersion = 0;
+  state.publicEditConflictServerContent = "";
+  state.publicEditConflictUpdatedAt = "";
   state.publicEditSuccess = "";
   state.publicEditError = "Keeping local changes";
 }
@@ -1742,6 +1846,9 @@ function connectNoteEvents(filename: string) {
   noteEvents.onmessage = (event) => {
     const payload = JSON.parse(event.data) as { type: string; filename: string; version: number; updatedAt: string };
     if (payload.type !== "note-updated" || payload.filename !== state.selectedFilename || payload.version <= state.editorVersion) {
+      return;
+    }
+    if (expectedLocalNoteVersion !== 0 && payload.version === expectedLocalNoteVersion) {
       return;
     }
     state.noteRemoteVersion = payload.version;
@@ -1779,6 +1886,9 @@ function connectPublicEditEvents() {
   publicEditEvents.onmessage = (event) => {
     const payload = JSON.parse(event.data) as { type: string; version: number; updatedAt: string };
     if (payload.type !== "note-updated" || payload.version <= state.publicEditVersion) {
+      return;
+    }
+    if (expectedLocalPublicEditVersion !== 0 && payload.version === expectedLocalPublicEditVersion) {
       return;
     }
     state.publicEditRemoteVersion = payload.version;
@@ -2355,7 +2465,7 @@ onBeforeUnmount(() => {
             placeholder="Enter password"
             class="surface-soft w-full rounded-2xl border px-4 py-3 text-sm outline-none"
           />
-          <p v-if="state.publicShareError" class="text-sm" :style="{ color: 'var(--danger)' }">{{ state.publicShareError }}</p>
+          <p v-if="state.publicShareError" class="retro-error-text text-sm">{{ state.publicShareError }}</p>
           <button
             class="rounded-2xl px-4 py-3 text-sm font-medium transition"
             :style="{ background: 'var(--accent)', color: 'var(--vp-c-bg)' }"
@@ -2366,7 +2476,7 @@ onBeforeUnmount(() => {
         </div>
 
         <div v-else>
-          <p v-if="state.publicShareError" class="mb-4 text-sm" :style="{ color: 'var(--danger)' }">{{ state.publicShareError }}</p>
+          <p v-if="state.publicShareError" class="retro-error-text mb-4 text-sm">{{ state.publicShareError }}</p>
           <textarea
             :value="state.publicShareContent"
             readonly
@@ -2385,12 +2495,9 @@ onBeforeUnmount(() => {
           <h1 class="mt-3 text-3xl font-semibold tracking-tight">
             {{ state.publicEditFilename || "Editable text" }}
           </h1>
-          <p class="mt-3 text-sm leading-6" :style="{ color: 'var(--vp-c-text-2)' }">
-            Anyone with this link can edit this note.
-          </p>
         </div>
 
-        <div v-if="state.publicEditLoading" class="text-sm" :style="{ color: 'var(--vp-c-text-2)' }">
+        <div v-if="state.publicEditLoading && !state.publicEditContent && !state.publicEditRequiresPassword" class="text-sm" :style="{ color: 'var(--vp-c-text-2)' }">
           Loading editable note...
         </div>
 
@@ -2402,7 +2509,7 @@ onBeforeUnmount(() => {
             placeholder="Enter password"
             class="surface-soft w-full rounded-2xl border px-4 py-3 text-sm outline-none"
           />
-          <p v-if="state.publicEditError" class="text-sm" :style="{ color: 'var(--danger)' }">{{ state.publicEditError }}</p>
+          <p v-if="state.publicEditError" class="retro-error-text text-sm">{{ state.publicEditError }}</p>
           <button
             class="rounded-2xl px-4 py-3 text-sm font-medium transition"
             :style="{ background: 'var(--accent)', color: 'var(--vp-c-bg)' }"
@@ -2413,13 +2520,13 @@ onBeforeUnmount(() => {
         </div>
 
         <div v-else>
-          <p v-if="state.publicEditError" class="mb-4 text-sm" :style="{ color: 'var(--danger)' }">{{ state.publicEditError }}</p>
+          <p v-if="state.publicEditError" class="retro-error-text mb-4 text-sm">{{ state.publicEditError }}</p>
           <div
             v-if="state.publicEditRemoteUpdatePending"
             class="mb-4 rounded-2xl border px-4 py-3 text-sm"
             :style="{ borderColor: 'var(--danger)', background: 'var(--panel-muted)' }"
           >
-            <p :style="{ color: 'var(--danger)' }">
+            <p class="retro-error-text">
               {{ state.publicEditConflict ? "Your changes were not saved because this note was updated elsewhere." : "This note was updated on another device." }}
             </p>
             <p v-if="state.publicEditRemoteUpdatedAt || state.publicEditConflictUpdatedAt" class="mt-2 text-xs" :style="{ color: 'var(--vp-c-text-2)' }">
@@ -2437,16 +2544,27 @@ onBeforeUnmount(() => {
               </button>
             </div>
           </div>
-          <textarea
-            v-model="state.publicEditContent"
-            class="surface-soft retro-editor-area min-h-[60vh] w-full resize-none rounded-3xl border p-5 text-sm leading-7 outline-none"
-            :style="{ color: 'var(--vp-c-text-1)' }"
-            spellcheck="false"
-            @input="
-              state.publicEditDirty = true;
-              state.publicEditSuccess = '';
-            "
-          />
+          <div class="relative">
+            <Transition name="retro-fade">
+              <div
+                v-if="state.publicEditLoading && Boolean(state.publicEditContent)"
+                class="retro-history-overlay absolute inset-0 z-10 flex items-center justify-center text-sm"
+                :style="{ color: 'var(--vp-c-text-2)' }"
+              >
+                Refreshing editable note...
+              </div>
+            </Transition>
+            <textarea
+              v-model="state.publicEditContent"
+              class="surface-soft retro-editor-area min-h-[60vh] w-full resize-none rounded-3xl border p-5 text-sm leading-7 outline-none transition"
+              :style="{ color: 'var(--vp-c-text-1)' }"
+              spellcheck="false"
+              @input="
+                state.publicEditDirty = true;
+                state.publicEditSuccess = '';
+              "
+            />
+          </div>
           <div class="mt-4 flex items-center justify-between gap-4">
             <p v-if="state.publicEditSuccess" class="retro-success-text text-sm" :style="{ color: 'var(--vp-c-green-2)' }">{{ state.publicEditSuccess }}</p>
             <div class="ml-auto">
@@ -3437,7 +3555,7 @@ onBeforeUnmount(() => {
                 <button
                   class="rounded-2xl px-3 py-2.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-70 sm:px-4 sm:py-3 sm:text-sm"
                   :style="{ background: 'var(--accent)', color: 'var(--vp-c-bg)' }"
-                  :disabled="state.saving || !state.editorTitle.trim()"
+                  :disabled="state.manualSaving || !state.editorTitle.trim()"
                   @click="saveNote"
                 >
                   Save
@@ -3486,8 +3604,9 @@ onBeforeUnmount(() => {
                 </div>
                 <div class="flex flex-wrap items-center gap-3">
                   <button
-                    class="action-button rounded-xl border px-3 py-2 text-xs transition"
+                    class="action-button rounded-xl border px-3 py-2 text-xs transition disabled:cursor-not-allowed disabled:opacity-70"
                     :class="state.sharePanelOpen ? 'surface-note-active' : 'surface-soft'"
+                    :disabled="!canOperateOnSavedNote"
                     @click="toggleSharePanel"
                   >
                     Settings
@@ -3760,12 +3879,6 @@ onBeforeUnmount(() => {
                         :disabled="!canOperateOnSavedNote"
                       />
                     </label>
-
-                    <Transition name="retro-fade">
-                      <p v-if="isEditMode" class="text-sm" :style="{ color: 'var(--danger)' }">
-                        Anyone with this link can edit this note.
-                      </p>
-                    </Transition>
 
                     <div class="grid gap-4 lg:grid-cols-2">
                       <div>

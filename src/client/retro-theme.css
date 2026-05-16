@@ -337,6 +337,19 @@ body {
     inset 2px 2px 0 0 #f0f0f0,
     inset -4px -4px 0 0 #7e7e7e,
     inset 4px 4px 0 0 #d6d6d6 !important;
+  cursor: not-allowed !important;
+  filter: none !important;
+  transform: none !important;
+  transition: none !important;
+}
+
+.retro-app button:not(.surface-soft):not(.action-button):not(.danger-button):not(.admin-action):disabled {
+  background: var(--retro-button-green) !important;
+  color: #081600 !important;
+  box-shadow:
+    inset -2px -2px 0 0 #315400,
+    inset 2px 2px 0 0 #d8ef9d,
+    inset -4px -4px 0 0 #567d12 !important;
   filter: none !important;
   transform: none !important;
   transition: none !important;
@@ -349,6 +362,7 @@ body {
     inset -2px -2px 0 0 #5c3131,
     inset 2px 2px 0 0 var(--retro-danger-face),
     inset -4px -4px 0 0 #8f6969 !important;
+  cursor: not-allowed !important;
   filter: none !important;
   transform: none !important;
   transition: none !important;
@@ -365,6 +379,31 @@ body {
     inset 2px 2px 0 0 #f0f0f0,
     inset -4px -4px 0 0 #7e7e7e,
     inset 4px 4px 0 0 #d6d6d6 !important;
+  filter: none !important;
+  transform: none !important;
+}
+
+.retro-app button:disabled:active,
+.retro-app .action-button:disabled:active,
+.retro-app .admin-action:disabled:active,
+.retro-app .surface-soft.action-button:disabled:active {
+  background: #c3c3c3 !important;
+  box-shadow:
+    inset -2px -2px 0 0 #262626,
+    inset 2px 2px 0 0 #f0f0f0,
+    inset -4px -4px 0 0 #7e7e7e,
+    inset 4px 4px 0 0 #d6d6d6 !important;
+  filter: none !important;
+  transform: none !important;
+}
+
+.retro-app .danger-button:disabled:active,
+.retro-app .surface-soft.danger-button:disabled:active {
+  background: var(--retro-danger-bg) !important;
+  box-shadow:
+    inset -2px -2px 0 0 #5c3131,
+    inset 2px 2px 0 0 var(--retro-danger-face),
+    inset -4px -4px 0 0 #8f6969 !important;
   filter: none !important;
   transform: none !important;
 }
@@ -414,6 +453,42 @@ body {
     inset -2px -2px 0 0 var(--retro-danger-face),
     inset 4px 4px 0 0 #8f6969 !important;
   transform: translate(1px, 1px);
+}
+
+.retro-app button:disabled:active,
+.retro-app .action-button:disabled:active,
+.retro-app .admin-action:disabled:active,
+.retro-app .surface-soft.action-button:disabled:active {
+  background: #c3c3c3 !important;
+  box-shadow:
+    inset -2px -2px 0 0 #262626,
+    inset 2px 2px 0 0 #f0f0f0,
+    inset -4px -4px 0 0 #7e7e7e,
+    inset 4px 4px 0 0 #d6d6d6 !important;
+  filter: none !important;
+  transform: none !important;
+}
+
+.retro-app button:not(.surface-soft):not(.action-button):not(.danger-button):not(.admin-action):disabled:active {
+  background: var(--retro-button-green) !important;
+  color: #081600 !important;
+  box-shadow:
+    inset -2px -2px 0 0 #315400,
+    inset 2px 2px 0 0 #d8ef9d,
+    inset -4px -4px 0 0 #567d12 !important;
+  filter: none !important;
+  transform: none !important;
+}
+
+.retro-app .danger-button:disabled:active,
+.retro-app .surface-soft.danger-button:disabled:active {
+  background: var(--retro-danger-bg) !important;
+  box-shadow:
+    inset -2px -2px 0 0 #5c3131,
+    inset 2px 2px 0 0 var(--retro-danger-face),
+    inset -4px -4px 0 0 #8f6969 !important;
+  filter: none !important;
+  transform: none !important;
 }
 
 .retro-app .surface-note,
